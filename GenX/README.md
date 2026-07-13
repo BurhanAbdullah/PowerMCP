@@ -13,4 +13,3 @@ This is the culminating function that does the final send-out of a run, after
 confirming which scenario folder to send (full absolute path) and the amount
 of cluster resources to allocate. Namely, wallclock time, number of cores, and memory (in GB).
 - [x] `plot_average_generation`
-
