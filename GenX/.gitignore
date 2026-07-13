@@ -1,0 +1,16 @@
+# Never commit this information, since that is private to the user
+
+.env
+.mcp.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# Runtime output
+run_logs/
+plots/
+*.png
