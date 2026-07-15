@@ -20,17 +20,18 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
 
-from compute_capacity_cost import resolve_scenario
+from GenX.tool_logic.compute_capacity_cost import resolve_scenario
 
 
 def _import_diurnal_generation():
-    """Import diurnal_generation.py from GENX_DIR or this package's parent dir."""
-    candidates = [os.environ.get("GENX_DIR"), str(Path(__file__).resolve().parent.parent)]
+    """Import diurnal_generation.py from this directory, GENX_DIR, or the parent dir."""
+    here = Path(__file__).resolve().parent
+    candidates = [str(here), os.environ.get("GENX_DIR"), str(here.parent)]
     for d in candidates:
         if d and os.path.isfile(os.path.join(d, "diurnal_generation.py")):
             if d not in sys.path:
                 sys.path.insert(0, d)
-            import diurnal_generation
+            import GenX.tool_logic.diurnal_generation as diurnal_generation
             return diurnal_generation
     raise ImportError(
         "diurnal_generation.py not found in GENX_DIR or the package parent directory"

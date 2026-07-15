@@ -1,4 +1,4 @@
-# genx-tested-agent MCP server.
+# genx_agent MCP server.
 
 '''
 Loads configuration from a .env file (see .env.example) before importing
@@ -6,8 +6,15 @@ anything that reads environment variables, so personal/cluster settings are
 never hardcoded.
 '''
 
+import sys
 from pathlib import Path
 from dotenv import load_dotenv
+
+# Make the repo root importable so `from GenX.tool_logic...` works when the
+# MCP client launches this file directly (sys.path[0] is GenX/, not the root).
+_REPO_ROOT = str(Path(__file__).resolve().parent.parent)
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
 # Load .env sitting next to this file (no-op if it doesn't exist).
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -17,7 +24,7 @@ from typing import Optional
 from mcp.server.fastmcp import FastMCP
 
 # Analytics tools
-from plot_capacity import (
+from GenX.tool_logic.plot_capacity import (
     resource_colors,
     column_titles,
     classify_resource,
@@ -28,13 +35,13 @@ from plot_capacity import (
     plot_capacity_bar,
 )
 
-from compute_capacity_cost import compute_capacity_cost as _compute_capacity_cost
-from plot_avg_generation import plot_diurnal_generation as _plot_diurnal_generation
+from GenX.tool_logic.compute_capacity_cost import compute_capacity_cost as _compute_capacity_cost
+from GenX.tool_logic.plot_avg_generation import plot_diurnal_generation as _plot_diurnal_generation
 
 # SLURM submission (imports os.environ at module load, hence after load_dotenv).
-from slurm import preview_case as _preview_case, submit_case as _submit_case
+from GenX.tool_logic.slurm import preview_case as _preview_case, submit_case as _submit_case
 
-mcp = FastMCP("genx-tested-agent")
+mcp = FastMCP("genx_agent")
 
 
 @mcp.tool()

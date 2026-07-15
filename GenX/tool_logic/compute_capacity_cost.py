@@ -17,7 +17,6 @@ read from ReserveMargin_w.csv (= raw dual / omega) and multiplied back by omega:
 
 Self-contained: depends only on os, numpy, and pandas.
 """
-
 import os
 
 import numpy as np
