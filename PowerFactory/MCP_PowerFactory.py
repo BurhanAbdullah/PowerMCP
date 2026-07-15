@@ -178,6 +178,204 @@ def get_config(cfg_path: str = "") -> str:
     with open(path, "r", encoding="utf-8") as fh:
         return json.dumps(json.load(fh), indent=2, ensure_ascii=False)
 
+@mcp.tool()
+def get_active_project() -> str:
+    """Return the currently active PowerFactory project."""
+    _, DIgSILENTAgent = _load_modules()
+
+    def _impl():
+        app = DIgSILENTAgent._shared_app
+        if app is None:
+            return {
+                "success": False,
+                "message": "PowerFactory is not connected",
+            }
+        project = app.GetActiveProject()
+        if project is None:
+            return {
+                "success": False,
+                "message": "No PowerFactory project is active",
+            }
+        return {
+            "success": True,
+            "name": project.GetAttribute("loc_name"),
+            "full_name": project.GetFullName(),
+        }
+
+    return _to_json(_pf(_impl))
+
+@mcp.tool()
+def get_active_study_case() -> str:
+    """Return the currently active PowerFactory study case."""
+    _, DIgSILENTAgent = _load_modules()
+
+    def _impl():
+        app = DIgSILENTAgent._shared_app
+        if app is None:
+            return {
+                "success": False,
+                "message": "PowerFactory is not connected",
+            }
+        study_case = app.GetActiveStudyCase()
+        if study_case is None:
+            return {
+                "success": False,
+                "message": "No PowerFactory study case is active",
+            }
+        return {
+            "success": True,
+            "name": study_case.GetAttribute("loc_name"),
+            "full_name": study_case.GetFullName(),
+        }
+
+    return _to_json(_pf(_impl))
+
+@mcp.tool()
+def get_parameters(
+    object_query: str,
+    variables: list[str],
+    max_results: int = 100,
+) -> str:
+    """Return selected attributes for calculation-relevant objects."""
+    _, DIgSILENTAgent = _load_modules()
+
+    def _impl():
+        app = DIgSILENTAgent._shared_app
+        if app is None:
+            return {
+                "success": False,
+                "message": "PowerFactory is not connected",
+            }
+
+        variable_names = list(
+            dict.fromkeys(name.strip() for name in variables if name.strip())
+        )
+        if not variable_names:
+            return {
+                "success": False,
+                "message": "At least one variable is required",
+            }
+
+        objects = app.GetCalcRelevantObjects(object_query) or []
+        if not objects:
+            return {
+                "success": False,
+                "message": f"No objects found for query: {object_query}",
+            }
+
+        limit = max(1, min(int(max_results), 1000))
+        results = []
+
+        for obj in objects[:limit]:
+            values = {}
+            errors = {}
+
+            for variable in variable_names:
+                try:
+                    value = obj.GetAttribute(variable)
+                    if not isinstance(
+                        value,
+                        (str, int, float, bool, list, type(None)),
+                    ):
+                        value = str(value)
+                    values[variable] = value
+                except Exception as exc:
+                    errors[variable] = str(exc)
+
+            item = {
+                "name": obj.GetAttribute("loc_name"),
+                "class_name": obj.GetClassName(),
+                "full_name": obj.GetFullName(),
+                "values": values,
+            }
+            if errors:
+                item["errors"] = errors
+
+            results.append(item)
+
+        return {
+            "success": True,
+            "query": object_query,
+            "variables": variable_names,
+            "total_count": len(objects),
+            "returned_count": len(results),
+            "results": results,
+        }
+
+    return _to_json(_pf(_impl))
+
+@mcp.tool()
+def list_objects(object_query: str = "*.ElmTerm", max_results: int = 100) -> str:
+    """List calculation-relevant PowerFactory objects."""
+    _, DIgSILENTAgent = _load_modules()
+
+    def _impl():
+        app = DIgSILENTAgent._shared_app
+        if app is None:
+            return {
+                "success": False,
+                "message": "PowerFactory is not connected",
+            }
+        objects = app.GetCalcRelevantObjects(object_query) or []
+        limit = max(1, min(int(max_results), 1000))
+        results = [
+            {
+                "name": obj.GetAttribute("loc_name"),
+                "class_name": obj.GetClassName(),
+                "full_name": obj.GetFullName(),
+            }
+            for obj in objects[:limit]
+        ]
+        return {
+            "success": True,
+            "query": object_query,
+            "total_count": len(objects),
+            "returned_count": len(results),
+            "results": results,
+        }
+
+    return _to_json(_pf(_impl))
+
+@mcp.tool()
+def list_study_cases(max_results: int = 100) -> str:
+    """List the study cases in the active PowerFactory project."""
+    _, DIgSILENTAgent = _load_modules()
+
+    def _impl():
+        app = DIgSILENTAgent._shared_app
+        if app is None:
+            return {
+                "success": False,
+                "message": "PowerFactory is not connected",
+            }
+        folder = app.GetProjectFolder("study")
+        if folder is None:
+            return {
+                "success": False,
+                "message": "Study-case folder was not found",
+            }
+        study_cases = folder.GetContents("*.IntCase", 1) or []
+        active_case = app.GetActiveStudyCase()
+        active_full_name = active_case.GetFullName() if active_case else None
+        limit = max(1, min(int(max_results), 1000))
+
+        results = []
+
+        for study_case in study_cases[:limit]:
+            full_name = study_case.GetFullName()
+            results.append({
+                "name": study_case.GetAttribute("loc_name"),
+                "full_name": full_name,
+                "is_active": full_name == active_full_name,
+            })
+        return {
+            "success": True,
+            "total_count": len(study_cases),
+            "returned_count": len(results),
+            "results": results,
+        }
+
+    return _to_json(_pf(_impl))
 
 @mcp.tool()
 def import_project(
