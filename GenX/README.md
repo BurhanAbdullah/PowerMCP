@@ -13,3 +13,7 @@ This is the culminating function that does the final send-out of a run, after
 confirming which scenario folder to send (full absolute path) and the amount
 of cluster resources to allocate. Namely, wallclock time, number of cores, and memory (in GB).
 - [x] `plot_average_generation`
+<br>
+Uses the `power.csv` file and timeweights from __ to create the annual average of each resource type's generation versus hour of day for the full representative output year. Plots as an area chart, and saves as a .png to the directory the user specifies to store plots.
+<br>
+- [x] `compute_capacity_cost`

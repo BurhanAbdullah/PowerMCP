@@ -1,8 +1,10 @@
 # genx-tested-agent MCP server.
-#
-# Loads configuration from a .env file (see .env.example) before importing
-# anything that reads environment variables, so personal/cluster settings are
-# never hardcoded.
+
+'''
+Loads configuration from a .env file (see .env.example) before importing
+anything that reads environment variables, so personal/cluster settings are
+never hardcoded.
+'''
 
 from pathlib import Path
 from dotenv import load_dotenv
@@ -25,6 +27,9 @@ from plot_capacity import (
     aggregate_capacity_by_resource,
     plot_capacity_bar,
 )
+
+from compute_capacity_cost import compute_capacity_cost as _compute_capacity_cost
+from plot_avg_generation import plot_diurnal_generation as _plot_diurnal_generation
 
 # SLURM submission (imports os.environ at module load, hence after load_dotenv).
 from slurm import preview_case as _preview_case, submit_case as _submit_case
@@ -161,10 +166,58 @@ def submit_genx_case(
     Resolves the case from the given directory path and submits the job. Returns
     the SLURM job ID and the resource values used. Have the user submit walltime
     and memory requirements (#  cores and memory in gb).
+
     If the user has not stated this, ask before calling this tool.
     """
     return _submit_case(case_dir, time_hours, mem_gb, cpus, case_name)
 
+@mcp.tool()
+def compute_capacity_cost(scenario_path: str, period: int = 1) -> dict:
+    """
+    Compute the PJM-wide capacity cost ($/MW-day and $/MW-yr) for a completed
+    GenX scenario period, from the binding capacity reserve margin duals
+    (ReserveMargin_w.csv). PJM CapRes regions 3-5 are included; the DC Island
+    (CapRes_8 / z28) is excluded.
+
+    Args:
+        scenario_path: Scenario directory (absolute, or relative to GENX_DIR
+            or the current working directory).
+        period: Model period number (default 1).
+    """
+    return _compute_capacity_cost(scenario_path, period)
+
+
+@mcp.tool()
+def plot_diurnal_generation(
+    case_dir: str,
+    output_path: str,
+    period: int,
+    zones: str,
+    labels: str,
+    compare_case_dir: Optional[str] = None,
+    diff: bool = False,
+) -> dict:
+    """
+    Plot the time-weighted average-day generation profile as a stacked area
+    chart: MW of generation per resource type on the y-axis, hour of day
+    (0-23) on the x-axis. Saves a PNG to output_path.
+
+    Optionally compare two scenarios: pass compare_case_dir to plot both
+    side by side, and set diff=True to instead plot the difference
+    (Case 1 - Case 2) as a line chart.
+
+    Args:
+        case_dir: Case directory (absolute, or relative to GENX_DIR or cwd).
+        output_path: Path of the PNG file to write.
+        period: Model period number.
+        zones: "pjm", "island", "all", or an explicit zone list string.
+        labels: Comma-separated plot label(s), e.g. "Base" or "Base, No CCS".
+        compare_case_dir: Optional second case for pairwise comparison.
+        diff: Plot Case 1 - Case 2 difference (requires compare_case_dir).
+    """
+    return _plot_diurnal_generation(
+        case_dir, output_path, period, zones, labels, compare_case_dir, diff
+    )
 
 if __name__ == "__main__":
     mcp.run()
