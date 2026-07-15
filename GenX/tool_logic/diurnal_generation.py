@@ -1,16 +1,9 @@
 #!/usr/bin/env python3
-"""Weighted average-day (diurnal) generation profiles from GenX TDR results.
-
+"""
 Computes the average MW by hour-of-day across the modeled year, weighting each
-model hour by its TDR time weight (results_pN/time_weights.csv). Mathematically identical to expanding the 52 representative weeks back to the
-full multi-year record via Period_map and averaging there — a plain unweighted
-average would over-weight the extreme (peak) weeks by ~7x.
+model hour by its TDR time weight (results_pN/time_weights.csv).
 
-Usage:
-    python3 diurnal_generation.py \
-        --orig scenarios/z10/PJM_DC_Island_750MW_z10 \
-        --dr   scenarios/z10/PJM_DC_Island_750MW_z10_dr \
-        --period 1 --zones pjm --out sample_plots/diurnal_750MW_z10_p1.png
+Performs computation for each aggregated resource type.
 """
 import argparse
 import os
@@ -22,29 +15,14 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
 
-# Zones 3 (ISONE), 9 (MISC), 11/12 (NY), 21 (SERC) are border zones, consistent
-# with non_pjm_zones in utils.py / consumer_cost_utils.py. Everything else,
-# including the DC Island (z28) when present, counts as PJM.
-NON_PJM_ZONES = {3, 9, 11, 12, 21}
-DC_ISLAND_ZONE = 28
+from GenX.tool_logic.palette import RESOURCE_COLORS
 
-# Stack order, bottom -> top. DR is shed load (the demand_response module's
-# injection), not generation, so it sits on top as a hatched band.
-STACK_ORDER = ["Nuclear", "Coal", "NGCC", "NGCT", "Hydro", "Wind",
-               "SolarPV", "Battery", "Other", "DR"]
+# Stack order, bottom -> top.
+# DR is shed load (not generation) so it sits on top as a hatched band.
+STACK_ORDER = ["Nuclear", "Coal", "Natural Gas", "Hydro", "Wind",
+               "Solar", "Battery", "Other", "DR"]
 
-COLORS = {
-    "Nuclear": "#FFA400",
-    "Coal":    "#131313",
-    "NGCC":    "#4581B4",
-    "NGCT":    "#758698",
-    "Hydro":   "#19196F",
-    "Wind":    "#84CDF9",
-    "SolarPV": "#FEFE00",
-    "Battery": "#7F007F",
-    "Other":   "#b0afa8",  
-    "DR":      "#b0afa8",   
-}
+COLORS = RESOURCE_COLORS # Referencing palette.py
 INK = "#0b0b0b"
 INK2 = "#52514e"
 GRID = "#e1e0d9"
@@ -59,34 +37,31 @@ def classify(name):
         return "Nuclear"
     if "coal" in n:
         return "Coal"
-    if "combined_cycle" in n or n.endswith("_cc_new"):
-        return "NGCC"
-    if "combustion_turbine" in n or n.endswith("_ct_new"):
-        return "NGCT"
-    if "hydroelectric" in n:      # includes hydroelectric_pumped_storage
+    if ("combined_cycle" in n or n.endswith("_cc_new")
+            or "combustion_turbine" in n or n.endswith("_ct_new")):
+        return "Natural Gas"
+    if "hydroelectric" in n:
         return "Hydro"
     if "wind" in n:
         return "Wind"
     if "pv" in n or "solar" in n or "distributed_generation" in n:
-        return "SolarPV"
+        return "Solar"
     if "batter" in n:
         return "Battery"
     return "Other"
 
 
+# What is this function doing ??
 def zone_set(spec):
-    """Resolve a --zones spec to a set of zone numbers (or None for all)."""
+    # Converts a user's zone request into a set for the MCP tool to use
+    # i.e. what comes in as "[1, 3, 5]" gets transformed to {1, 3, 5}
     if spec == "all":
         return None
-    if spec == "pjm":
-        return {"exclude": NON_PJM_ZONES}
-    if spec == "island":
-        return {"include": {DC_ISLAND_ZONE}}
-    return {"include": {int(z) for z in spec.split(",")}}
+    return {int(z) for z in spec.split(",")}
 
 
-def diurnal_by_tech(case_dir, period, zones="pjm", verbose=False):
-    """Return a 24 x tech-group DataFrame of weight-averaged MW by hour of day."""
+def diurnal_by_tech(case_dir, period, zones="all", verbose=False):
+    # Returns a 24 x tech-group DataFrame of weight-averaged MW by hour of day
     res_dir = os.path.join(case_dir, "results", f"results_p{period}")
     power = pd.read_csv(os.path.join(res_dir, "power.csv"), index_col=0)
     weights = pd.read_csv(os.path.join(res_dir, "time_weights.csv"))["Weight"].to_numpy()
@@ -102,10 +77,14 @@ def diurnal_by_tech(case_dir, period, zones="pjm", verbose=False):
 
     zf = zone_set(zones)
     if zf is not None:
-        if "include" in zf:
-            keep = res_zone[res_zone.isin(zf["include"])].index
-        else:
-            keep = res_zone[~res_zone.isin(zf["exclude"])].index
+        available = {int(z) for z in res_zone.unique()}
+        # Check if the input zone number is part of the GenX case scenario
+        invalid = sorted(zf - available)
+        if invalid:
+            raise ValueError(
+                f"Invalid zone(s) {invalid}. Available zones: {sorted(available)}"
+            )
+        keep = res_zone[res_zone.isin(zf)].index
         data = data[keep]
 
     groups = {}
@@ -120,7 +99,7 @@ def diurnal_by_tech(case_dir, period, zones="pjm", verbose=False):
             print(f"  Other contains: {techs}")
 
     hod = np.arange(T) % 24                      # t1 -> hour 0; 168 % 24 == 0 so
-    wsum = np.bincount(hod, weights, minlength=24)  # every rep week aligns
+    wsum = np.bincount(hod, weights, minlength=24) # every rep week aligns
     out = {}
     for g, cols in groups.items():
         x = data[cols].sum(axis=1).to_numpy()
@@ -183,11 +162,9 @@ def plot_comparison(orig_df, dr_df, labels, title, out_png):
 
 
 def plot_difference(orig_df, dr_df, labels, title, out_png):
-    """Line plot of (dr - orig) by technology, per hour of day.
+    # Line plot of (dr - orig) by technology, per hour of day.
+    # Reveals the formulation difference the near-identical stacks may hide
 
-    Reveals the formulation difference the near-identical stacks hide. Each tech
-    is one line; a bold neutral line marks the net change in total generation.
-    """
     cols = [g for g in STACK_ORDER if g in set(orig_df.columns) | set(dr_df.columns)]
     orig_df = orig_df.reindex(columns=cols, fill_value=0.0)
     dr_df = dr_df.reindex(columns=cols, fill_value=0.0)
@@ -227,8 +204,8 @@ def main():
     p.add_argument("--orig", required=True, help="original case folder")
     p.add_argument("--dr", required=True, help="DR / peak-shaving case folder")
     p.add_argument("--period", type=int, default=1)
-    p.add_argument("--zones", default="pjm",
-                   help="'pjm' (default), 'island', 'all', or comma-separated zone numbers")
+    p.add_argument("--zones", default="all",
+                   help="'all' (default) or comma-separated zone numbers")
     p.add_argument("--out", required=True, help="output PNG path")
     p.add_argument("--labels", default="Original,Demand response")
     p.add_argument("--diff", action="store_true",
@@ -240,8 +217,7 @@ def main():
     print(f"[dr]   {args.dr}")
     dr = diurnal_by_tech(args.dr, args.period, args.zones, verbose=True)
 
-    zone_lbl = {"pjm": "PJM zones", "island": "DC Island (z28)", "all": "all zones"}.get(
-        args.zones, f"zones {args.zones}")
+    zone_lbl = "all zones" if args.zones == "all" else f"zones {args.zones}"
     kind = "difference" if args.diff else "generation by technology"
     title = f"Average day, {kind} — {zone_lbl}, p{args.period}"
     labels = args.labels.split(",")

@@ -5,7 +5,7 @@ from typing import Optional
 
 
 def _require(name: str) -> str:
-    """Read a required environment variable or fail with a clear message."""
+    # Read a required environment variable or fail and let the user know
     val = os.environ.get(name)
     if not val:
         raise RuntimeError(
@@ -15,7 +15,7 @@ def _require(name: str) -> str:
     return val
 
 
-# Required: absolute path to the GenX.jl checkout this server submits cases from.
+# Required: absolute path to the user's GenX directory
 GENX_DIR = _require("GENX_DIR")
 
 # Where SLURM logs are written. Defaults to <GENX_DIR>/run_logs.
@@ -28,7 +28,7 @@ SLURM_DEFAULTS = {
     "mail_user":  os.environ.get("SLURM_MAIL_USER"),
 }
 
-# Cluster module / build settings (all optional, env-driven).
+# Cluster module / build settings
 # GenX is natively in Julia
 JULIA_MODULE = os.environ.get("JULIA_MODULE")        # e.g. "julia/1.10.5"
 GUROBI_MODULE = os.environ.get("GUROBI_MODULE")      # e.g. "gurobi/9.0.1"
@@ -43,9 +43,7 @@ def _is_valid_case(path: str) -> bool:
 
 
 def find_case(case_dir: str) -> str:
-    """
-    Ensures a GenX case folder resolves to a valid absolute path.
-    """
+    # Ensures a GenX case folder resolves to a valid absolute path.
     expanded = os.path.expanduser(case_dir)
     candidates = (
         [expanded] if os.path.isabs(expanded)
@@ -67,7 +65,7 @@ def build_script(case_path: str, time_hours: int, mem_gb: int, cpus: int = None,
     cpus      = cpus if cpus is not None else SLURM_DEFAULTS["cpus"]
     mail_user = SLURM_DEFAULTS["mail_user"]
 
-    # Optional SLURM mail directives — only when a mail user is configured.
+    # Only mail when a mail user is configured.
     mail_lines = ""
     if mail_user:
         mail_lines = (
@@ -75,12 +73,10 @@ def build_script(case_path: str, time_hours: int, mem_gb: int, cpus: int = None,
             f"#SBATCH --mail-user={mail_user}\n"
         )
 
-    # Optional JULIA_CPU_TARGET export.
     cpu_target_line = ""
     if JULIA_CPU_TARGET:
         cpu_target_line = f'export JULIA_CPU_TARGET="{JULIA_CPU_TARGET}"\n'
 
-    # Optional module loads.
     module_lines = ""
     if JULIA_MODULE:
         module_lines += f"module load {JULIA_MODULE}\n"

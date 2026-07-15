@@ -40,7 +40,7 @@ Below is the computation calling this skill executes.
     $$
 
     $$
-    \text{TotalAnnualCapacityCost}_{\text{subzones}} = \sum_{r \in \mathcal{Z}^{\text{PJM}}_{\text{CapRes}}} \text{TotalAnnualCapacityCost}_r
+    \text{TotalAnnualCapacityCost}_{\text{subzones}} = \sum_{r \in \mathcal{Z}^{\text{subzones}}_{\text{CapRes}}} \text{TotalAnnualCapacityCost}_r
     $$
 
     ### Annual Cost ($/MW-yr)
@@ -62,10 +62,10 @@ Below is the computation calling this skill executes.
     $$
 
     $$
-    \text{Price}_{\text{PJM}}^{\text{day}} = \frac{\text{Price}_{\text{subzones}}^{\text{annual}}}{365}
+    \text{Price}_{\text{subzones}}^{\text{day}} = \frac{\text{Price}_{\text{subzones}}^{\text{annual}}}{365}
     $$
 
-    We map GenX results to a $/MW-day price that is comparable to ISO capacity auction convention -- like in the PJM market. This is achieved by normalizing total annual capacity cost by the coincident peak demand of all relevant capacity reserve zones and scaling down to a per-day value.
+    We map GenX results to a $/MW-day price that is comparable to ISO capacity auction convention -- like in the PJM market. This is achieved by normalizing total annual capacity cost by the coincident peak demand of all relevant capacity reserve zones and scaling down to a per-day value. By default every capacity reserve region and zone in the case is included; supply a subset of `capres_regions` / `zones` to restrict the computation.
 
 ## Setup
 

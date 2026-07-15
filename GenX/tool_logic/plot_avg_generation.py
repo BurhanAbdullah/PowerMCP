@@ -1,18 +1,7 @@
-'''This is the tooling to plot the average generation of each resource type
-across all specified zones as a stacked area chart vs time.
-
-Namely, this tool will re-weight the power.csv file according to the period
-map used in time domain reduction, then find the average generation
-for each hour of day across the entire year. The plot outputs as a PNG file
-to the specified directory to save plots.
-
-Further, this tool enables pairwise comparison of two scenarios,
-where an additional line chart is plotted separately to show the difference
-in average generation of Case 1 - Case 2.
-'''
+# Plots the area chart generated from plot_avg_generation.py
+# Plots a 'difference' chart enabling pairwise comparison of two scenarios
 
 import os
-import sys
 from pathlib import Path
 
 import matplotlib
@@ -22,48 +11,23 @@ from matplotlib.patches import Patch
 
 from GenX.tool_logic.compute_capacity_cost import resolve_scenario
 
-
-def _import_diurnal_generation():
-    """Import diurnal_generation.py from this directory, GENX_DIR, or the parent dir."""
-    here = Path(__file__).resolve().parent
-    candidates = [str(here), os.environ.get("GENX_DIR"), str(here.parent)]
-    for d in candidates:
-        if d and os.path.isfile(os.path.join(d, "diurnal_generation.py")):
-            if d not in sys.path:
-                sys.path.insert(0, d)
-            import GenX.tool_logic.diurnal_generation as diurnal_generation
-            return diurnal_generation
-    raise ImportError(
-        "diurnal_generation.py not found in GENX_DIR or the package parent directory"
-    )
-
-
-dg = None
-
-
-def _ensure_dg():
-    """Load diurnal_generation lazily so a missing GENX_DIR fails the tool
-    call with a clean error instead of preventing the MCP server from starting."""
-    global dg
-    if dg is None:
-        dg = _import_diurnal_generation()
-
+import GenX.tool_logic.diurnal_generation as dg
 
 def resolve_case(case_dir: str, period: int) -> str:
     """Resolve `case_dir` to an absolute path containing
-    results/results_p{period}/power.csv (see npv_costs.resolve_scenario)."""
+    results/results_p{period}/power.csv (see compute_capacity_cost.resolve_scenario)."""
     marker = os.path.join("results", f"results_p{period}", "power.csv")
     return resolve_scenario(case_dir, period, marker=marker)
 
 
 def plot_single(df, label, title, out_png):
-    """Stacked area chart of an average-day generation profile."""
+    # Stacked area chart of an average-day generation profile
     vmax = df.sum(axis=1).max()
     unit_div, unit = (1000.0, "GW") if vmax > 10000 else (1.0, "MW")
     cols = [g for g in dg.STACK_ORDER if g in df.columns]
     df = df.reindex(columns=cols, fill_value=0.0)
 
-    fig, ax = plt.subplots(figsize=(7.5, 4.6), facecolor="white")
+    fig, ax = plt.subplots(figsize=(8.2, 4.6), facecolor="white")
     dg._stack(ax, df, unit_div)
     dg._style_axis(ax)
     ax.set_title(label, fontsize=11, color=dg.INK, pad=8)
@@ -73,10 +37,10 @@ def plot_single(df, label, title, out_png):
     handles = [Patch(facecolor=dg.COLORS[g], edgecolor="white",
                      hatch="///" if g == "DR" else None, label=g)
                for g in reversed(cols)]
-    fig.legend(handles=handles, loc="center left", bbox_to_anchor=(0.86, 0.5),
+    fig.legend(handles=handles, loc="center left", bbox_to_anchor=(0.82, 0.5),
                frameon=False, fontsize=9, labelcolor=dg.INK2)
     fig.suptitle(title, fontsize=12, color=dg.INK, x=0.1, ha="left")
-    fig.subplots_adjust(left=0.1, right=0.84, top=0.84, bottom=0.13)
+    fig.subplots_adjust(left=0.1, right=0.8, top=0.84, bottom=0.13)
     fig.savefig(out_png, dpi=180)
     plt.close(fig)
 
@@ -89,14 +53,12 @@ def plot_diurnal_generation(
     compare_case_dir: str | None = None,
     diff: bool = False,
 ) -> dict:
-    """Implementation behind the MCP tool. Returns a result dict."""
+    # Implements the diurnal_generation.py logic
     try:
-        _ensure_dg()
         case = resolve_case(case_dir, period)
         primary = dg.diurnal_by_tech(case, period, zones)
 
-        zone_lbl = {"pjm": "PJM zones", "island": "DC Island (z28)",
-                    "all": "all zones"}.get(zones, f"zones {zones}")
+        zone_lbl = "all zones" if zones == "all" else f"zones {zones}"
         label_list = [s.strip() for s in labels.split(",")]
 
         out = Path(os.path.expanduser(output_path))
@@ -128,5 +90,5 @@ def plot_diurnal_generation(
             "compare_case_dir": None if compare_case_dir is None else other_case,
             "tech_groups": list(primary.columns),
         }
-    except Exception as e:  # surface a clean error to the MCP client
+    except Exception as e:
         return {"success": False, "message": f"{type(e).__name__}: {e}"}

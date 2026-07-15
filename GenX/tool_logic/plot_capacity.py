@@ -5,17 +5,24 @@ from pathlib import Path
 import pandas as pd
 import matplotlib.pyplot as plt
 
-#  Colors for capacity bar graph
+from GenX.tool_logic.palette import RESOURCE_COLORS
 
+# Resource name mapping for proper capitalization
+resource_labels = {
+    "coal": "Coal",
+    "natural_gas": "Natural Gas",
+    "solar": "Solar",
+    "wind": "Wind",
+    "battery": "Battery",
+    "hydropower": "Hydro",
+    "hydro": "Hydro",
+    "nuclear": "Nuclear",
+    "biomass": "Biomass",
+}
+
+# Colors for capacity bar graph, keyed by resource_group (shared palette)
 resource_colors = {
-    "coal": "#4A4A4A",
-    "natural_gas": "#7B9DB7",
-    "nuclear": "#A8D84E",
-    "hydro": "#87CEEB",
-    "biomass": "#5F7243",
-    "solar": "#FAE07A",
-    "wind": "#C4A8D8",
-    "battery": "#C0C0C0",
+    group: RESOURCE_COLORS[label] for group, label in resource_labels.items()
 }
 
 # Plot titles for each capacity column
@@ -189,19 +196,6 @@ def plot_capacity_bar(
 
     # Get colors for each resource group
     colors = [resource_colors.get(rg, "#808080") for rg in plot_df["resource_group"]]
-
-    # Resource name mapping for proper capitalization
-    resource_labels = {
-        "coal": "Coal",
-        "natural_gas": "Natural Gas",
-        "solar": "Solar",
-        "wind": "Wind",
-        "battery": "Battery",
-        "hydropower": "Hydro",
-        "hydro": "Hydro",
-        "nuclear": "Nuclear",
-        "biomass": "Biomass"
-    }
 
     # Create bar chart with bars touching (width=1.0)
     bars = ax.bar(

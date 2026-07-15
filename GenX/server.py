@@ -179,19 +179,33 @@ def submit_genx_case(
     return _submit_case(case_dir, time_hours, mem_gb, cpus, case_name)
 
 @mcp.tool()
-def compute_capacity_cost(scenario_path: str, period: int = 1) -> dict:
+def compute_capacity_cost(
+    scenario_path: str,
+    period: int = 1,
+    capres_regions: Optional[list[int]] = None,
+    zones: Optional[list[int]] = None,
+) -> dict:
     """
-    Compute the PJM-wide capacity cost ($/MW-day and $/MW-yr) for a completed
-    GenX scenario period, from the binding capacity reserve margin duals
-    (ReserveMargin_w.csv). PJM CapRes regions 3-5 are included; the DC Island
-    (CapRes_8 / z28) is excluded.
+    Compute the capacity cost ($/MW-day and $/MW-yr) for a completed GenX
+    scenario period, from the binding capacity reserve margin duals
+    (ReserveMargin_w.csv).
+
+    By default the cost is aggregated over every CapRes region and the peak
+    demand over every zone in the case. Before calling, ask the user whether
+    they want the computation over all zones or a specific subset; if they
+    name a subset, pass it via capres_regions / zones.
 
     Args:
         scenario_path: Scenario directory (absolute, or relative to GENX_DIR
             or the current working directory).
-        period: Model period number (default 1).
+        period: Model period number. If the user hasn't specified a period,
+            ask which one they want rather than assuming period 1.
+        capres_regions: CapRes region numbers to include in the cost numerator
+            (default: all regions in ReserveMargin_w.csv).
+        zones: Zone numbers for the peak-demand denominator
+            (default: all zones in Demand_data.csv).
     """
-    return _compute_capacity_cost(scenario_path, period)
+    return _compute_capacity_cost(scenario_path, period, capres_regions, zones)
 
 
 @mcp.tool()
@@ -216,8 +230,11 @@ def plot_diurnal_generation(
     Args:
         case_dir: Case directory (absolute, or relative to GENX_DIR or cwd).
         output_path: Path of the PNG file to write.
-        period: Model period number.
-        zones: "pjm", "island", "all", or an explicit zone list string.
+        period: Model period number. If the user hasn't specified a period,
+            ask which one they want rather than assuming.
+        zones: "all", or comma-separated zone numbers (e.g. "1,5,12"). If the
+            user hasn't said which zones, ask whether to plot all zones or a
+            specific subset.
         labels: Comma-separated plot label(s), e.g. "Base" or "Base, No CCS".
         compare_case_dir: Optional second case for pairwise comparison.
         diff: Plot Case 1 - Case 2 difference (requires compare_case_dir).
