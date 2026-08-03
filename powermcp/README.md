@@ -36,7 +36,7 @@ pip install "powermcp[all]"             # everything
 | Extra | Tool(s) | Notes |
 |---|---|---|
 | *(none / core)* | pandapower, PyPSA | always installed |
-| `andes` | ANDES | |
+| `andes` | ANDES | GPL-3.0; installed only as an optional pip extra, never vendored |
 | `egret` | Egret | + needs an external solver (ipopt/Gurobi) |
 | `opendss` | OpenDSS | |
 | `surge` | surge | **Python 3.12–3.14 only** |

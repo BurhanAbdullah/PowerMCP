@@ -5,6 +5,7 @@ import io
 import sys
 import shutil
 import json
+import numpy as np
 from pathlib import Path
 from contextlib import redirect_stdout, redirect_stderr
 from mcp.server.fastmcp import FastMCP
@@ -255,15 +256,34 @@ def run_eigenvalue_analysis(file_path: str) -> Dict[str, Any]:
                 
                 # Run eigenvalue analysis
                 success = ss.EIG.run()
-                
-                # Extract eigenvalue results
+
+                # Extract eigenvalue results. ss.EIG.mu holds the eigenvalues
+                # (complex array); frequency and damping ratio are derived
+                # from mu using the same formula ANDES's own EIG.post_process()
+                # uses internally for its text report:
+                #   freq_hz = |Im(mu)| / (2*pi)
+                #   damping_pct = -100 * Re(mu) / |mu|
+                modes = []
+                for mu in ss.EIG.mu:
+                    if mu.imag == 0:
+                        freq_hz, damping_pct = 0.0, 0.0
+                    else:
+                        freq_hz = abs(mu.imag) / (2 * np.pi)
+                        damping_pct = -100.0 * mu.real / abs(mu)
+                    modes.append({
+                        "eigenvalue": [float(mu.real), float(mu.imag)],
+                        "frequency_hz": freq_hz,
+                        "damping_ratio_pct": damping_pct,
+                        "is_oscillatory": bool(mu.imag != 0),
+                    })
+                modes.sort(key=lambda m: m["damping_ratio_pct"])  # least-damped (most concerning) first
+
                 eig_results = {
-                    "n_eigenvalues": len(ss.EIG.mu) if hasattr(ss.EIG, 'mu') else 0,
-                    "eigenvalues": ss.EIG.mu.tolist() if hasattr(ss.EIG, 'mu') else [],
-                    "eigenvectors": ss.EIG.vectors.tolist() if hasattr(ss.EIG, 'vectors') else [],
-                    "participation_factors": ss.EIG.pfactors.tolist() if hasattr(ss.EIG, 'pfactors') else [],
-                    "state_variables": ss.EIG.state_desc if hasattr(ss.EIG, 'state_desc') else [],
-                    "success": success
+                    "n_modes": len(modes),
+                    "modes": modes,
+                    "participation_factors": ss.EIG.pfactors.tolist() if getattr(ss.EIG, "pfactors", None) is not None else [],
+                    "state_names": list(ss.EIG.x_name) if getattr(ss.EIG, "x_name", None) is not None else [],
+                    "success": success,
                 }
                 
                 # Get list of output files
