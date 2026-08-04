@@ -60,12 +60,17 @@ mcp = FastMCP("ANDES MCP Server")
 system_state: Dict[str, Any] = {}
 
 @mcp.tool()
-def run_power_flow(file_path: str) -> Dict[str, Any]:
+def run_power_flow(file_path: str, dyr_path: Optional[str] = None) -> Dict[str, Any]:
     """Run power flow analysis on a power system case
-    
+
     Args:
         file_path: Path to the case file
-    
+        dyr_path: Optional path to a PSS/E .dyr dynamic-model file (generators,
+            exciters, governors) to attach to a PSS/E .raw case. When given,
+            it is loaded alongside file_path via ANDES's addfile mechanism,
+            enabling run_time_domain_simulation/run_eigenvalue_analysis to
+            operate on real dynamics instead of static topology only.
+
     Returns:
         Dict containing power flow results and output information
     """
@@ -79,36 +84,62 @@ def run_power_flow(file_path: str) -> Dict[str, Any]:
                 "message": f"Input file not found: {abs_file_path}"
             }
 
+        # Resolve and validate the optional .dyr file before any run-dir/chdir
+        # work happens, same pattern as the main input file check above.
+        abs_dyr_path = None
+        if dyr_path is not None:
+            abs_dyr_path = os.path.abspath(dyr_path)
+            if not os.path.exists(abs_dyr_path):
+                return {
+                    "status": "error",
+                    "message": f"Dynamic model file not found: {abs_dyr_path}"
+                }
+
         # Create a unique directory for this run
         run_dir = os.path.join(_andes_runs_dir(), f"pf_{Path(abs_file_path).stem}")
         os.makedirs(run_dir, exist_ok=True)
-        
+
         # Copy input file to run directory
         input_file = os.path.join(run_dir, os.path.basename(abs_file_path))
         shutil.copy2(abs_file_path, input_file)
-        
+
+        # Copy the .dyr file into run_dir alongside the main input, and use
+        # the copied path as addfile -- keeps everything this run touched
+        # under output_dir.
+        dyr_file = None
+        if abs_dyr_path is not None:
+            dyr_file = os.path.join(run_dir, os.path.basename(abs_dyr_path))
+            shutil.copy2(abs_dyr_path, dyr_file)
+
         # Save current directory and change to run directory
         original_dir = os.getcwd()
         os.chdir(run_dir)
-        
+
         try:
             # Capture stdout/stderr
             f_out = io.StringIO()
             f_err = io.StringIO()
-            
+
             with redirect_stdout(f_out), redirect_stderr(f_err):
-                # Run power flow with minimal output
-                ss = andes.run(input_file, no_output=True, verbose=50)
-                
+                # Run power flow with minimal output. addfile is only passed
+                # when a .dyr was supplied, so the no-dyr call path is
+                # byte-identical to before.
+                run_kwargs = {"no_output": True, "verbose": 50}
+                if dyr_file is not None:
+                    run_kwargs["addfile"] = dyr_file
+                ss = andes.run(input_file, **run_kwargs)
+
                 # Store system state for other tools
                 system_state['current_system'] = ss
-                
+
                 # Extract key power flow results
                 pflow_results = {
                     "converged": ss.PFlow.converged,
                     "iterations": ss.PFlow.niter if hasattr(ss.PFlow, 'niter') else 0,
                     "max_mis": float(ss.PFlow.mis[-1]) if hasattr(ss.PFlow, 'mis') and len(ss.PFlow.mis) > 0 else 0.0,
-                    "time": float(ss.PFlow.t) if hasattr(ss.PFlow, 't') else 0.0
+                    "time": float(ss.PFlow.t) if hasattr(ss.PFlow, 't') else 0.0,
+                    "dynamic_models_loaded": dyr_path is not None,
+                    "n_dynamic_generators": int(getattr(ss.groups.get("SynGen"), "n", 0)) if hasattr(ss, "groups") else 0,
                 }
                 
                 # Get list of output files

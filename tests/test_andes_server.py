@@ -14,6 +14,10 @@ ANDES/kundur_full.json is the repo's only ANDES fixture: a Kundur two-area
 four-machine system with its own embedded dynamic models (GENROU, exciters,
 governors), so it exercises power flow, time-domain simulation, and
 eigenvalue analysis all in one case with no fixture authoring needed here.
+
+The raw+dyr dynamic-model-loading tests further down this file use ANDES's
+own bundled ieee14 PSS/E case (raw + dyr), resolved via andes.get_case(...)
+at test-call time -- see the comment above _ieee14_raw_dyr_paths() for why.
 """
 
 from __future__ import annotations
@@ -89,5 +93,80 @@ def test_run_eigenvalue_analysis_returns_modes(andes_mcp):
 
 def test_run_eigenvalue_analysis_missing_file(andes_mcp, tmp_path):
     r = andes_mcp.run_eigenvalue_analysis(str(tmp_path / "nope.json"))
+    assert r["status"] == "error"
+    assert "not found" in r["message"].lower()
+
+
+# ---------------------------------------------------------------------------
+# PSS/E raw+dyr dynamic-model loading (fungible-farm/PowerMCP#2)
+#
+# These tests use ANDES's own bundled ieee14 example case (raw + dyr),
+# resolved at test-call time via andes.get_case(...), which reads from the
+# installed andes package's own andes/cases/ directory (andes declares these
+# as package-data in its own pyproject.toml). No .raw/.dyr fixture is
+# authored or vendored into this repo: ieee14.raw/.dyr are GPL-3.0 ANDES
+# files, and this repo is MIT, so referencing the installed dependency's own
+# copy avoids any vendoring question entirely.
+#
+# andes must not be imported at module scope (it may not be installed), so
+# the get_case() calls happen inside a helper invoked from within each test
+# body, after the andes_mcp fixture parameter has already run
+# pytest.importorskip("andes").
+# ---------------------------------------------------------------------------
+
+
+def _ieee14_raw_dyr_paths():
+    import andes
+
+    raw_path = andes.get_case("ieee14/ieee14.raw")
+    dyr_path = andes.get_case("ieee14/ieee14.dyr")
+    return raw_path, dyr_path
+
+
+def test_run_power_flow_without_dyr_has_no_dynamic_models(andes_mcp):
+    raw_path, _ = _ieee14_raw_dyr_paths()
+
+    r = andes_mcp.run_power_flow(raw_path)
+    assert r["status"] == "success", r
+    pf = r["power_flow"]
+    assert pf["converged"] is True
+    assert pf["dynamic_models_loaded"] is False
+    assert pf["n_dynamic_generators"] == 0
+
+
+def test_run_power_flow_with_dyr_attaches_dynamic_models(andes_mcp):
+    raw_path, dyr_path = _ieee14_raw_dyr_paths()
+
+    r = andes_mcp.run_power_flow(raw_path, dyr_path=dyr_path)
+    assert r["status"] == "success", r
+    pf = r["power_flow"]
+    assert pf["converged"] is True
+    assert pf["dynamic_models_loaded"] is True
+    # Not asserting an exact count (e.g. == 5): stay robust to upstream ANDES
+    # case-file changes across versions -- only assert that dynamics
+    # actually attached.
+    assert pf["n_dynamic_generators"] > 0
+
+
+def test_run_power_flow_with_dyr_enables_time_domain_simulation(andes_mcp):
+    # The actual motivating scenario from the issue: without a .dyr there are
+    # no real dynamics to simulate.
+    raw_path, dyr_path = _ieee14_raw_dyr_paths()
+
+    pf = andes_mcp.run_power_flow(raw_path, dyr_path=dyr_path)
+    assert pf["status"] == "success", pf
+    assert pf["power_flow"]["n_dynamic_generators"] > 0
+
+    r = andes_mcp.run_time_domain_simulation(step_size=0.01, t_end=1.0)
+    assert r["status"] == "success", r
+    sim = r["simulation"]
+    assert sim["success"] is True
+    assert sim["status"] == "completed"
+
+
+def test_run_power_flow_missing_dyr_file(andes_mcp, tmp_path):
+    raw_path, _ = _ieee14_raw_dyr_paths()
+
+    r = andes_mcp.run_power_flow(raw_path, dyr_path=str(tmp_path / "nope.dyr"))
     assert r["status"] == "error"
     assert "not found" in r["message"].lower()
