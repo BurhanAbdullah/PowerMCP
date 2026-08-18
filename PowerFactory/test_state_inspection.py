@@ -159,6 +159,83 @@ class StateInspectionTest(unittest.TestCase):
         disconnected = json.loads(mcp_module.get_active_project())
         self.assertFalse(disconnected["success"])
 
+    def test_list_components(self):
+            bus = FakeObject(
+                "Bus 01",
+                "ElmTerm",
+                r"\user\test.IntPrj\Grid\Bus 01.ElmTerm",
+                {"outserv": 0},
+            )
+            line = FakeObject(
+                "Line 01 - 02",
+                "ElmLne",
+                r"\user\test.IntPrj\Grid\Line 01 - 02.ElmLne",
+                {"outserv": 0},
+            )
+            transformer = FakeObject(
+                "Trf 02 - 30",
+                "ElmTr2",
+                r"\user\test.IntPrj\Grid\Trf 02 - 30.ElmTr2",
+                {"outserv": 1},
+            )
+
+            FakeAgent._shared_app = FakeApplication(
+                project=None,
+                active_case=None,
+                study_cases=[],
+                objects={
+                    "*.ElmTerm": [bus],
+                    "*.ElmLne": [line],
+                    "*.ElmTr2": [transformer],
+                    "*.ElmTr3": [],
+                    "*.ElmCoup": [],
+                },
+            )
+
+            buses = json.loads(
+                mcp_module.list_components("buses", max_results=10)
+            )
+            self.assertTrue(buses["success"])
+            self.assertEqual(buses["total_count"], 1)
+            self.assertEqual(buses["results"][0]["name"], "Bus 01")
+
+            branches = json.loads(
+                mcp_module.list_components("branches", max_results=10)
+            )
+            self.assertTrue(branches["success"])
+            self.assertEqual(branches["total_count"], 2)
+            self.assertEqual(branches["returned_count"], 2)
+            self.assertEqual(
+                {item["class_name"] for item in branches["results"]},
+                {"ElmLne", "ElmTr2"},
+            )
+
+            transformers = json.loads(
+                mcp_module.list_components(
+                    "transformers",
+                    max_results=10,
+                )
+            )
+            self.assertEqual(transformers["total_count"], 1)
+            self.assertTrue(
+                transformers["results"][0]["out_of_service"]
+            )
+
+            limited = json.loads(
+                mcp_module.list_components("branches", max_results=1)
+            )
+            self.assertEqual(limited["total_count"], 2)
+            self.assertEqual(limited["returned_count"], 1)
+
+            unsupported = json.loads(
+                mcp_module.list_components("unknown")
+            )
+            self.assertFalse(unsupported["success"])
+            self.assertIn(
+                "buses",
+                unsupported["supported_component_types"],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

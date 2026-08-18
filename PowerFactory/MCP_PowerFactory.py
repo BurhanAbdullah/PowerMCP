@@ -9,16 +9,22 @@ Author
 
 Tools
 -----
-  ping              Connectivity check.
-  get_config        Return simulation_config.json as a JSON string.
-  import_project    Import a .pfd file and activate it in PowerFactory.
-  create_study_case Create/activate a study case by name (no simulation run).
-  modify_parameter  Modify an object attribute by object query + variable name.
-  run_loadflow      Run a load flow calculation (ComLdf) on the active study case.
-  run_short_circuit Run a short-circuit calculation (ComShc) on the active study case.
-  run_simulation    Run the full pipeline from simulation_config.json.
-  run_custom_case   Run a one-off case with parameters supplied at call-time.
-  read_results_csv  Read the latest (or a specific) RMS results CSV.
+  ping                  Connectivity check.
+  get_config            Return simulation_config.json as a JSON string.
+  get_active_project    Return the active PowerFactory project.
+  get_active_study_case Return the active PowerFactory study case.
+  get_parameters        Read selected attributes from matching objects.
+  list_objects          List objects using a PowerFactory object query.
+  list_components       List objects using friendly equipment categories.
+  list_study_cases      List study cases and identify the active case.
+  import_project        Import a .pfd file and activate it in PowerFactory.
+  create_study_case     Create/activate a study case by name (no simulation run).
+  modify_parameter      Modify an object attribute by object query + variable name.
+  run_loadflow          Run a load flow calculation (ComLdf) on the active study case.
+  run_short_circuit     Run a short-circuit calculation (ComShc) on the active study case.
+  run_simulation        Run the full pipeline from simulation_config.json.
+  run_custom_case       Run a one-off case with parameters supplied at call-time.
+  read_results_csv      Read the latest (or a specific) RMS results CSV.
 
 Usage
 -----
@@ -304,6 +310,38 @@ def get_parameters(
 
     return _to_json(_pf(_impl))
 
+_COMPONENT_QUERIES = {
+    "buses": ("*.ElmTerm",),
+    "lines": ("*.ElmLne",),
+    "branches": (
+        "*.ElmLne",
+        "*.ElmTr2",
+        "*.ElmTr3",
+        "*.ElmCoup",
+    ),
+    "transformers": (
+        "*.ElmTr2",
+        "*.ElmTr3",
+    ),
+    "loads": (
+        "*.ElmLod",
+        "*.ElmLodmv",
+        "*.ElmLodlv",
+        "*.ElmLodlvp",
+    ),
+    "generators": (
+        "*.ElmSym",
+        "*.ElmGenstat",
+        "*.ElmPvsys",
+    ),
+    "synchronous_generators": ("*.ElmSym",),
+    "static_generators": ("*.ElmGenstat",),
+    "pv_systems": ("*.ElmPvsys",),
+    "storage": ("*.ElmBattery",),
+    "external_grids": ("*.ElmXnet",),
+    "switches": ("*.ElmCoup",),
+}
+
 @mcp.tool()
 def list_objects(object_query: str = "*.ElmTerm", max_results: int = 100) -> str:
     """List calculation-relevant PowerFactory objects."""
@@ -332,6 +370,85 @@ def list_objects(object_query: str = "*.ElmTerm", max_results: int = 100) -> str
             "total_count": len(objects),
             "returned_count": len(results),
             "results": results,
+        }
+
+    return _to_json(_pf(_impl))
+
+@mcp.tool()
+def list_components(
+    component_type: str = "all",
+    max_results: int = 100,
+) -> str:
+    """List components using a friendly equipment category."""
+    category = (
+        component_type.strip()
+        .lower()
+        .replace(" ", "_")
+        .replace("-", "_")
+    )
+
+    if category == "all":
+        queries = tuple(dict.fromkeys(
+            query
+            for category_queries in _COMPONENT_QUERIES.values()
+            for query in category_queries
+        ))
+    else:
+        queries = _COMPONENT_QUERIES.get(category)
+
+    if queries is None:
+        return _to_json({
+            "success": False,
+            "message": f"Unsupported component type: {component_type}",
+            "supported_component_types": [
+                "all",
+                *_COMPONENT_QUERIES,
+            ],
+        })
+
+    _, DIgSILENTAgent = _load_modules()
+
+    def _impl():
+        app = DIgSILENTAgent._shared_app
+        if app is None:
+            return {
+                "success": False,
+                "message": "PowerFactory is not connected",
+            }
+
+        components = {}
+
+        for query in queries:
+            for obj in app.GetCalcRelevantObjects(query) or []:
+                full_name = obj.GetFullName()
+
+                if full_name in components:
+                    continue
+
+                try:
+                    out_of_service = bool(
+                        obj.GetAttribute("outserv")
+                    )
+                except Exception:
+                    out_of_service = None
+
+                components[full_name] = {
+                    "name": obj.GetAttribute("loc_name"),
+                    "class_name": obj.GetClassName(),
+                    "full_name": full_name,
+                    "out_of_service": out_of_service,
+                }
+
+        results = list(components.values())
+        limit = max(1, min(int(max_results), 1000))
+
+        return {
+            "success": True,
+            "component_type": category,
+            "queries": list(queries),
+            "total_count": len(results),
+            "returned_count": min(len(results), limit),
+            "results": results[:limit],
         }
 
     return _to_json(_pf(_impl))
