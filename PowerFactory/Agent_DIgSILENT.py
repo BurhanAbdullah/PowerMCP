@@ -1012,6 +1012,42 @@ class DIgSILENTAgent:
         return template_type
 
     @staticmethod
+    def _set_and_verify_attributes(element, expected, errors):
+        import math
+
+        for attribute, value in expected.items():
+            element.SetAttribute(attribute, value)
+
+        actual = {}
+        for attribute, expected_value in expected.items():
+            actual_value = element.GetAttribute(attribute)
+            actual[attribute] = actual_value
+
+            try:
+                if isinstance(expected_value, float):
+                    matches = math.isclose(
+                        float(actual_value),
+                        expected_value,
+                        rel_tol=1e-9,
+                        abs_tol=1e-9,
+                    )
+                elif hasattr(expected_value, "GetFullName"):
+                    matches = (
+                        actual_value is not None
+                        and actual_value.GetFullName()
+                        == expected_value.GetFullName()
+                    )
+                else:
+                    matches = actual_value == expected_value
+            except Exception:
+                matches = False
+
+            if not matches:
+                raise RuntimeError(errors[attribute])
+
+        return actual
+
+    @staticmethod
     def _rollback_connected_element(
         grid,
         buses,
@@ -1232,41 +1268,32 @@ class DIgSILENTAgent:
             if created_bus is None:
                 raise RuntimeError(f"Could not create bus: {name}")
 
-            created_bus.SetAttribute("uknom", voltage)
-            created_bus.SetAttribute(
-                "outserv",
-                int(bool(out_of_service)),
+            actual = cls._set_and_verify_attributes(
+                created_bus,
+                {
+                    "uknom": voltage,
+                    "outserv": int(bool(out_of_service)),
+                },
+                {
+                    "uknom": (
+                        "PowerFactory did not retain the requested nominal voltage"
+                    ),
+                    "outserv": (
+                        "PowerFactory did not retain the requested service state"
+                    ),
+                },
             )
 
             actual_name = str(
                 created_bus.GetAttribute("loc_name")
             )
-            actual_voltage = float(
-                created_bus.GetAttribute("uknom")
-            )
-            actual_outserv = int(
-                created_bus.GetAttribute("outserv")
-            )
-
             if actual_name != name:
                 raise RuntimeError(
                     "PowerFactory did not retain the requested bus name"
                 )
 
-            if not math.isclose(
-                actual_voltage,
-                voltage,
-                rel_tol=1e-9,
-                abs_tol=1e-9,
-            ):
-                raise RuntimeError(
-                    "PowerFactory did not retain the requested nominal voltage"
-                )
-
-            if actual_outserv != int(bool(out_of_service)):
-                raise RuntimeError(
-                    "PowerFactory did not retain the requested service state"
-                )
+            actual_voltage = float(actual["uknom"])
+            actual_outserv = int(actual["outserv"])
 
             grid_label = str(grid.GetAttribute("loc_name"))
             full_name = created_bus.GetFullName()
@@ -1364,52 +1391,37 @@ class DIgSILENTAgent:
                 grid_name,
             )
 
-            created_load.SetAttribute("plini", active_power)
-            created_load.SetAttribute("qlini", reactive_power)
-            created_load.SetAttribute(
-                "outserv",
-                int(bool(out_of_service)),
+            actual = cls._set_and_verify_attributes(
+                created_load,
+                {
+                    "plini": active_power,
+                    "qlini": reactive_power,
+                    "outserv": int(bool(out_of_service)),
+                },
+                {
+                    "plini": (
+                        "PowerFactory did not retain the requested active power"
+                    ),
+                    "qlini": (
+                        "PowerFactory did not retain the requested reactive power"
+                    ),
+                    "outserv": (
+                        "PowerFactory did not retain the requested service state"
+                    ),
+                },
             )
 
             actual_name = str(
                 created_load.GetAttribute("loc_name")
             )
-            actual_active_power = float(
-                created_load.GetAttribute("plini")
-            )
-            actual_reactive_power = float(
-                created_load.GetAttribute("qlini")
-            )
-            actual_outserv = int(
-                created_load.GetAttribute("outserv")
-            )
-
             if actual_name != name:
                 raise RuntimeError(
                     "PowerFactory did not retain the requested load name"
                 )
-            if not math.isclose(
-                actual_active_power,
-                active_power,
-                rel_tol=1e-9,
-                abs_tol=1e-9,
-            ):
-                raise RuntimeError(
-                    "PowerFactory did not retain the requested active power"
-                )
-            if not math.isclose(
-                actual_reactive_power,
-                reactive_power,
-                rel_tol=1e-9,
-                abs_tol=1e-9,
-            ):
-                raise RuntimeError(
-                    "PowerFactory did not retain the requested reactive power"
-                )
-            if actual_outserv != int(bool(out_of_service)):
-                raise RuntimeError(
-                    "PowerFactory did not retain the requested service state"
-                )
+
+            actual_active_power = float(actual["plini"])
+            actual_reactive_power = float(actual["qlini"])
+            actual_outserv = int(actual["outserv"])
 
             full_name = created_load.GetFullName()
             log.ok(
@@ -1515,62 +1527,41 @@ class DIgSILENTAgent:
                 grid_name,
             )
 
-            created_generator.SetAttribute("typ_id", template_type)
-            created_generator.SetAttribute("pgini", active_power)
-            created_generator.SetAttribute("qgini", reactive_power)
-            created_generator.SetAttribute(
-                "outserv",
-                int(bool(out_of_service)),
+            actual = cls._set_and_verify_attributes(
+                created_generator,
+                {
+                    "typ_id": template_type,
+                    "pgini": active_power,
+                    "qgini": reactive_power,
+                    "outserv": int(bool(out_of_service)),
+                },
+                {
+                    "typ_id": (
+                        "PowerFactory did not retain the machine type"
+                    ),
+                    "pgini": (
+                        "PowerFactory did not retain the active power"
+                    ),
+                    "qgini": (
+                        "PowerFactory did not retain the reactive power"
+                    ),
+                    "outserv": (
+                        "PowerFactory did not retain the service state"
+                    ),
+                },
             )
 
             actual_name = str(
                 created_generator.GetAttribute("loc_name")
             )
-            actual_active_power = float(
-                created_generator.GetAttribute("pgini")
-            )
-            actual_reactive_power = float(
-                created_generator.GetAttribute("qgini")
-            )
-            actual_outserv = int(
-                created_generator.GetAttribute("outserv")
-            )
-            actual_type = created_generator.GetAttribute("typ_id")
-
             if actual_name != name:
                 raise RuntimeError(
                     "PowerFactory did not retain the generator name"
                 )
-            if not math.isclose(
-                actual_active_power,
-                active_power,
-                rel_tol=1e-9,
-                abs_tol=1e-9,
-            ):
-                raise RuntimeError(
-                    "PowerFactory did not retain the active power"
-                )
-            if not math.isclose(
-                actual_reactive_power,
-                reactive_power,
-                rel_tol=1e-9,
-                abs_tol=1e-9,
-            ):
-                raise RuntimeError(
-                    "PowerFactory did not retain the reactive power"
-                )
-            if actual_outserv != int(bool(out_of_service)):
-                raise RuntimeError(
-                    "PowerFactory did not retain the service state"
-                )
-            if (
-                actual_type is None
-                or actual_type.GetFullName()
-                != template_type.GetFullName()
-            ):
-                raise RuntimeError(
-                    "PowerFactory did not retain the machine type"
-                )
+
+            actual_active_power = float(actual["pgini"])
+            actual_reactive_power = float(actual["qgini"])
+            actual_outserv = int(actual["outserv"])
 
             full_name = created_generator.GetFullName()
             log.ok(
@@ -1681,49 +1672,36 @@ class DIgSILENTAgent:
                 connection_attributes=("bus1", "bus2"),
             )
 
-            created_line.SetAttribute("typ_id", template_type)
-            created_line.SetAttribute("dline", length)
-            created_line.SetAttribute(
-                "outserv",
-                int(bool(out_of_service)),
+            actual = cls._set_and_verify_attributes(
+                created_line,
+                {
+                    "typ_id": template_type,
+                    "dline": length,
+                    "outserv": int(bool(out_of_service)),
+                },
+                {
+                    "typ_id": (
+                        "PowerFactory did not retain the line type"
+                    ),
+                    "dline": (
+                        "PowerFactory did not retain the line length"
+                    ),
+                    "outserv": (
+                        "PowerFactory did not retain the service state"
+                    ),
+                },
             )
 
             actual_name = str(
                 created_line.GetAttribute("loc_name")
             )
-            actual_length = float(
-                created_line.GetAttribute("dline")
-            )
-            actual_outserv = int(
-                created_line.GetAttribute("outserv")
-            )
-            actual_type = created_line.GetAttribute("typ_id")
-
             if actual_name != name:
                 raise RuntimeError(
                     "PowerFactory did not retain the line name"
                 )
-            if not math.isclose(
-                actual_length,
-                length,
-                rel_tol=1e-9,
-                abs_tol=1e-9,
-            ):
-                raise RuntimeError(
-                    "PowerFactory did not retain the line length"
-                )
-            if actual_outserv != int(bool(out_of_service)):
-                raise RuntimeError(
-                    "PowerFactory did not retain the service state"
-                )
-            if (
-                actual_type is None
-                or actual_type.GetFullName()
-                != template_type.GetFullName()
-            ):
-                raise RuntimeError(
-                    "PowerFactory did not retain the line type"
-                )
+
+            actual_length = float(actual["dline"])
+            actual_outserv = int(actual["outserv"])
 
             full_name = created_line.GetFullName()
             log.ok(
@@ -1834,39 +1812,31 @@ class DIgSILENTAgent:
                 connection_attributes=("bushv", "buslv"),
             )
 
-            created_transformer.SetAttribute(
-                "typ_id",
-                template_type,
-            )
-            created_transformer.SetAttribute(
-                "outserv",
-                int(bool(out_of_service)),
+            actual = cls._set_and_verify_attributes(
+                created_transformer,
+                {
+                    "typ_id": template_type,
+                    "outserv": int(bool(out_of_service)),
+                },
+                {
+                    "typ_id": (
+                        "PowerFactory did not retain the transformer type"
+                    ),
+                    "outserv": (
+                        "PowerFactory did not retain the service state"
+                    ),
+                },
             )
 
             actual_name = str(
                 created_transformer.GetAttribute("loc_name")
             )
-            actual_outserv = int(
-                created_transformer.GetAttribute("outserv")
-            )
-            actual_type = created_transformer.GetAttribute("typ_id")
-
             if actual_name != name:
                 raise RuntimeError(
                     "PowerFactory did not retain the transformer name"
                 )
-            if actual_outserv != int(bool(out_of_service)):
-                raise RuntimeError(
-                    "PowerFactory did not retain the service state"
-                )
-            if (
-                actual_type is None
-                or actual_type.GetFullName()
-                != template_type.GetFullName()
-            ):
-                raise RuntimeError(
-                    "PowerFactory did not retain the transformer type"
-                )
+
+            actual_outserv = int(actual["outserv"])
 
             full_name = created_transformer.GetFullName()
             log.ok(
