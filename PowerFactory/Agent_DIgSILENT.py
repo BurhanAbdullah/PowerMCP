@@ -981,137 +981,6 @@ class DIgSILENTAgent:
     @staticmethod
     def _rollback_connected_element(
         grid,
-        bus,
-        element,
-        cubicle,
-        class_name: str,
-        element_name: str,
-        cubicle_name: str,
-    ) -> bool:
-        for created_object in (element, cubicle):
-            if created_object is not None:
-                try:
-                    created_object.Delete()
-                except Exception:
-                    pass
-
-        try:
-            remaining_elements = (
-                grid.GetContents(f"*.{class_name}", 1) or []
-            )
-            remaining_cubicles = (
-                bus.GetContents("*.StaCubic", 1) or []
-            )
-
-            element_exists = any(
-                str(obj.GetAttribute("loc_name")).casefold()
-                == element_name.casefold()
-                for obj in remaining_elements
-            )
-            cubicle_exists = any(
-                str(obj.GetAttribute("loc_name")).casefold()
-                == cubicle_name.casefold()
-                for obj in remaining_cubicles
-            )
-            return not element_exists and not cubicle_exists
-        except Exception:
-            return False
-
-    @classmethod
-    def _create_connected_element(
-        cls,
-        app,
-        class_name: str,
-        element_label: str,
-        element_name: str,
-        bus_name: str,
-        grid_name: str,
-    ):
-        grid = cls._select_grid(app, grid_name)
-
-        existing_elements = (
-            grid.GetContents(f"*.{class_name}", 1) or []
-        )
-        if any(
-            str(obj.GetAttribute("loc_name")).casefold()
-            == element_name.casefold()
-            for obj in existing_elements
-        ):
-            raise RuntimeError(
-                f"{element_label} already exists in the selected grid: "
-                f"{element_name}"
-            )
-
-        bus = cls._select_bus(grid, bus_name)
-        cubicle_name = f"{element_name} Cubicle"
-
-        existing_cubicles = (
-            bus.GetContents("*.StaCubic", 1) or []
-        )
-        if any(
-            str(obj.GetAttribute("loc_name")).casefold()
-            == cubicle_name.casefold()
-            for obj in existing_cubicles
-        ):
-            raise RuntimeError(
-                f"Cubicle already exists on bus: {cubicle_name}"
-            )
-
-        cubicle = None
-        element = None
-
-        try:
-            cubicle = bus.CreateObject(
-                "StaCubic",
-                cubicle_name,
-            )
-            if cubicle is None:
-                raise RuntimeError(
-                    f"Could not create cubicle on bus: {bus_name}"
-                )
-
-            element = grid.CreateObject(class_name, element_name)
-            if element is None:
-                raise RuntimeError(
-                    f"Could not create {element_label.lower()}: "
-                    f"{element_name}"
-                )
-
-            element.SetAttribute("bus1", cubicle)
-            actual_cubicle = element.GetAttribute("bus1")
-
-            if (
-                actual_cubicle is None
-                or actual_cubicle.GetFullName()
-                != cubicle.GetFullName()
-            ):
-                raise RuntimeError(
-                    "PowerFactory did not retain the bus connection"
-                )
-
-            return grid, bus, element, cubicle, cubicle_name
-
-        except Exception as exc:
-            created_any = element is not None or cubicle is not None
-            message = str(exc)
-
-            if created_any:
-                rolled_back = cls._rollback_connected_element(
-                    grid,
-                    bus,
-                    element,
-                    cubicle,
-                    class_name,
-                    element_name,
-                    cubicle_name,
-                )
-                message += f" | rolled_back={rolled_back}"
-
-            raise RuntimeError(message) from exc
-
-    @staticmethod
-    def _rollback_two_terminal_element(
-        grid,
         buses,
         element,
         cubicles,
@@ -1119,6 +988,13 @@ class DIgSILENTAgent:
         element_name: str,
         cubicle_names,
     ) -> bool:
+        if not isinstance(buses, (list, tuple)):
+            buses = (buses,)
+        if not isinstance(cubicles, (list, tuple)):
+            cubicles = (cubicles,)
+        if not isinstance(cubicle_names, (list, tuple)):
+            cubicle_names = (cubicle_names,)
+
         for created_object in (element, *cubicles):
             if created_object is not None:
                 try:
@@ -1135,34 +1011,30 @@ class DIgSILENTAgent:
                 == element_name.casefold()
                 for obj in remaining_elements
             )
-
-            cubicle_exists = False
-            for bus, cubicle_name in zip(buses, cubicle_names):
-                remaining_cubicles = (
-                    bus.GetContents("*.StaCubic", 1) or []
-                )
-                if any(
+            cubicle_exists = any(
+                any(
                     str(obj.GetAttribute("loc_name")).casefold()
                     == cubicle_name.casefold()
-                    for obj in remaining_cubicles
-                ):
-                    cubicle_exists = True
-
+                    for obj in (
+                        bus.GetContents("*.StaCubic", 1) or []
+                    )
+                )
+                for bus, cubicle_name in zip(buses, cubicle_names)
+            )
             return not element_exists and not cubicle_exists
         except Exception:
             return False
 
     @classmethod
-    def _create_two_terminal_element(
+    def _create_connected_element(
         cls,
         app,
         class_name: str,
         element_label: str,
         element_name: str,
-        bus1_name: str,
-        bus2_name: str,
+        bus_names,
         grid_name: str,
-        connection_attributes=("bus1", "bus2"),
+        connection_attributes=("bus1",),
     ):
         grid = cls._select_grid(app, grid_name)
 
@@ -1179,18 +1051,29 @@ class DIgSILENTAgent:
                 f"{element_name}"
             )
 
-        buses = (
-            cls._select_bus(grid, bus1_name),
-            cls._select_bus(grid, bus2_name),
+        bus_names = tuple(bus_names)
+        connection_attributes = tuple(connection_attributes)
+        if len(bus_names) != len(connection_attributes):
+            raise RuntimeError(
+                "Bus names and connection attributes must have equal length"
+            )
+
+        buses = tuple(
+            cls._select_bus(grid, bus_name)
+            for bus_name in bus_names
         )
-        if buses[0].GetFullName() == buses[1].GetFullName():
+        if (
+            len(buses) > 1
+            and len({bus.GetFullName() for bus in buses}) != len(buses)
+        ):
             raise RuntimeError(
                 "The two terminals must use different buses"
             )
 
-        cubicle_names = (
-            f"{element_name} Cubicle 1",
-            f"{element_name} Cubicle 2",
+        cubicle_names = tuple(
+            f"{element_name} Cubicle"
+            + (f" {index}" if len(buses) > 1 else "")
+            for index in range(1, len(buses) + 1)
         )
 
         for bus, cubicle_name in zip(buses, cubicle_names):
@@ -1206,22 +1089,21 @@ class DIgSILENTAgent:
                     f"Cubicle already exists on bus: {cubicle_name}"
                 )
 
-        cubicles = [None, None]
+        cubicles = []
         element = None
 
         try:
-            for index, (bus, cubicle_name) in enumerate(
-                zip(buses, cubicle_names)
-            ):
-                cubicles[index] = bus.CreateObject(
+            for bus, cubicle_name in zip(buses, cubicle_names):
+                cubicle = bus.CreateObject(
                     "StaCubic",
                     cubicle_name,
                 )
-                if cubicles[index] is None:
+                if cubicle is None:
                     raise RuntimeError(
-                        f"Could not create cubicle on bus: "
+                        "Could not create cubicle on bus: "
                         f"{bus.GetAttribute('loc_name')}"
                     )
+                cubicles.append(cubicle)
 
             element = grid.CreateObject(class_name, element_name)
             if element is None:
@@ -1242,7 +1124,7 @@ class DIgSILENTAgent:
                     != cubicle.GetFullName()
                 ):
                     raise RuntimeError(
-                        "PowerFactory did not retain both bus connections"
+                        "PowerFactory did not retain the bus connection"
                     )
 
             return (
@@ -1254,14 +1136,10 @@ class DIgSILENTAgent:
             )
 
         except Exception as exc:
-            created_any = (
-                element is not None
-                or any(cubicle is not None for cubicle in cubicles)
-            )
             message = str(exc)
 
-            if created_any:
-                rolled_back = cls._rollback_two_terminal_element(
+            if element is not None or cubicles:
+                rolled_back = cls._rollback_connected_element(
                     grid,
                     buses,
                     element,
@@ -1440,16 +1318,16 @@ class DIgSILENTAgent:
             app = cls._get_application(open_digsilent)
             (
                 grid,
-                bus,
+                (bus,),
                 created_load,
-                created_cubicle,
-                cubicle_name,
+                (created_cubicle,),
+                (cubicle_name,),
             ) = cls._create_connected_element(
                 app,
                 "ElmLod",
                 "Load",
                 name,
-                requested_bus,
+                (requested_bus,),
                 grid_name,
             )
 
@@ -1608,16 +1486,16 @@ class DIgSILENTAgent:
 
             (
                 grid,
-                bus,
+                (bus,),
                 created_generator,
-                created_cubicle,
-                cubicle_name,
+                (created_cubicle,),
+                (cubicle_name,),
             ) = cls._create_connected_element(
                 app,
                 "ElmSym",
                 "Generator",
                 name,
-                requested_bus,
+                (requested_bus,),
                 grid_name,
             )
 
@@ -1793,14 +1671,14 @@ class DIgSILENTAgent:
                 created_line,
                 cubicles,
                 cubicle_names,
-            ) = cls._create_two_terminal_element(
+            ) = cls._create_connected_element(
                 app,
                 "ElmLne",
                 "Line",
                 name,
-                requested_bus1,
-                requested_bus2,
+                (requested_bus1, requested_bus2),
                 grid_name,
+                connection_attributes=("bus1", "bus2"),
             )
 
             created_line.SetAttribute("typ_id", template_type)
@@ -1870,7 +1748,7 @@ class DIgSILENTAgent:
             message = str(exc)
 
             if created_any:
-                rolled_back = cls._rollback_two_terminal_element(
+                rolled_back = cls._rollback_connected_element(
                     grid,
                     buses,
                     created_line,
@@ -1963,13 +1841,12 @@ class DIgSILENTAgent:
                 created_transformer,
                 cubicles,
                 cubicle_names,
-            ) = cls._create_two_terminal_element(
+            ) = cls._create_connected_element(
                 app,
                 "ElmTr2",
                 "Transformer",
                 name,
-                high_voltage_bus,
-                low_voltage_bus,
+                (high_voltage_bus, low_voltage_bus),
                 grid_name,
                 connection_attributes=("bushv", "buslv"),
             )
@@ -2030,7 +1907,7 @@ class DIgSILENTAgent:
             message = str(exc)
 
             if created_any:
-                rolled_back = cls._rollback_two_terminal_element(
+                rolled_back = cls._rollback_connected_element(
                     grid,
                     buses,
                     created_transformer,
