@@ -1117,6 +1117,7 @@ class DIgSILENTAgent:
         element_name: str,
         bus_names,
         grid_name: str,
+        attributes=None,
         connection_attributes=("bus1",),
     ):
         grid = cls._select_grid(app, grid_name)
@@ -1210,13 +1211,18 @@ class DIgSILENTAgent:
                         "PowerFactory did not retain the bus connection"
                     )
 
-            return (
-                grid,
-                buses,
+            actual = cls._set_and_verify_attributes(
                 element,
-                tuple(cubicles),
-                cubicle_names,
+                attributes or {},
+                element_label,
             )
+            if str(element.GetAttribute("loc_name")) != element_name:
+                raise RuntimeError(
+                    "PowerFactory did not retain the "
+                    f"{element_label.lower()} name"
+                )
+
+            return grid, buses, element, actual
 
         except Exception as exc:
             message = str(exc)
@@ -1261,43 +1267,21 @@ class DIgSILENTAgent:
         if not math.isfinite(voltage) or voltage <= 0:
             return False, "nominal_voltage_kv must be a finite positive number"
 
-        created_bus = None
-        grid = None
-
         try:
             app = cls._get_application(open_digsilent)
-            grid = cls._select_grid(app, requested_grid)
-
-            existing = grid.GetContents("*.ElmTerm", 1) or []
-            if any(
-                str(obj.GetAttribute("loc_name")).casefold()
-                == name.casefold()
-                for obj in existing
-            ):
-                raise RuntimeError(
-                    f"Bus already exists in the selected grid: {name}"
-                )
-
-            created_bus = grid.CreateObject("ElmTerm", name)
-            if created_bus is None:
-                raise RuntimeError(f"Could not create bus: {name}")
-
-            actual = cls._set_and_verify_attributes(
-                created_bus,
-                {
+            grid, _, created_bus, actual = cls._create_connected_element(
+                app,
+                "ElmTerm",
+                "Bus",
+                name,
+                (),
+                requested_grid,
+                attributes={
                     "uknom": voltage,
                     "outserv": int(bool(out_of_service)),
                 },
-                "Bus",
+                connection_attributes=(),
             )
-
-            actual_name = str(
-                created_bus.GetAttribute("loc_name")
-            )
-            if actual_name != name:
-                raise RuntimeError(
-                    "PowerFactory did not retain the requested bus name"
-                )
 
             actual_voltage = float(actual["uknom"])
             actual_outserv = int(actual["outserv"])
@@ -1317,28 +1301,7 @@ class DIgSILENTAgent:
             )
 
         except Exception as exc:
-            rolled_back = False
-
-            if created_bus is not None:
-                try:
-                    created_bus.Delete()
-                    remaining = (
-                        grid.GetContents("*.ElmTerm", 1)
-                        if grid is not None
-                        else []
-                    ) or []
-                    rolled_back = not any(
-                        str(obj.GetAttribute("loc_name")).casefold()
-                        == name.casefold()
-                        for obj in remaining
-                    )
-                except Exception:
-                    rolled_back = False
-
             message = str(exc)
-            if created_bus is not None:
-                message += f" | rolled_back={rolled_back}"
-
             log.error(f"Bus creation failed: {message}")
             return False, message
 
@@ -1375,46 +1338,21 @@ class DIgSILENTAgent:
         if not math.isfinite(reactive_power):
             return False, "reactive_power_mvar must be finite"
 
-        grid = None
-        bus = None
-        created_load = None
-        created_cubicle = None
-        cubicle_name = f"{name} Cubicle"
-
         try:
             app = cls._get_application(open_digsilent)
-            (
-                grid,
-                (bus,),
-                created_load,
-                (created_cubicle,),
-                (cubicle_name,),
-            ) = cls._create_connected_element(
+            _, _, created_load, actual = cls._create_connected_element(
                 app,
                 "ElmLod",
                 "Load",
                 name,
                 (requested_bus,),
                 grid_name,
-            )
-
-            actual = cls._set_and_verify_attributes(
-                created_load,
-                {
+                attributes={
                     "plini": active_power,
                     "qlini": reactive_power,
                     "outserv": int(bool(out_of_service)),
                 },
-                "Load",
             )
-
-            actual_name = str(
-                created_load.GetAttribute("loc_name")
-            )
-            if actual_name != name:
-                raise RuntimeError(
-                    "PowerFactory did not retain the requested load name"
-                )
 
             actual_active_power = float(actual["plini"])
             actual_reactive_power = float(actual["qlini"])
@@ -1434,24 +1372,7 @@ class DIgSILENTAgent:
             )
 
         except Exception as exc:
-            created_any = (
-                created_load is not None
-                or created_cubicle is not None
-            )
             message = str(exc)
-
-            if created_any:
-                rolled_back = cls._rollback_connected_element(
-                    grid,
-                    bus,
-                    created_load,
-                    created_cubicle,
-                    "ElmLod",
-                    name,
-                    cubicle_name,
-                )
-                message += f" | rolled_back={rolled_back}"
-
             log.error(f"Load creation failed: {message}")
             return False, message
 
@@ -1492,12 +1413,6 @@ class DIgSILENTAgent:
         if not math.isfinite(reactive_power):
             return False, "reactive_power_mvar must be finite"
 
-        grid = None
-        bus = None
-        created_generator = None
-        created_cubicle = None
-        cubicle_name = f"{name} Cubicle"
-
         try:
             app = cls._get_application(open_digsilent)
 
@@ -1509,39 +1424,20 @@ class DIgSILENTAgent:
                 "synchronous-machine type",
             )
 
-            (
-                grid,
-                (bus,),
-                created_generator,
-                (created_cubicle,),
-                (cubicle_name,),
-            ) = cls._create_connected_element(
+            _, _, created_generator, actual = cls._create_connected_element(
                 app,
                 "ElmSym",
                 "Generator",
                 name,
                 (requested_bus,),
                 grid_name,
-            )
-
-            actual = cls._set_and_verify_attributes(
-                created_generator,
-                {
+                attributes={
                     "typ_id": template_type,
                     "pgini": active_power,
                     "qgini": reactive_power,
                     "outserv": int(bool(out_of_service)),
                 },
-                "Generator",
             )
-
-            actual_name = str(
-                created_generator.GetAttribute("loc_name")
-            )
-            if actual_name != name:
-                raise RuntimeError(
-                    "PowerFactory did not retain the generator name"
-                )
 
             actual_active_power = float(actual["pgini"])
             actual_reactive_power = float(actual["qgini"])
@@ -1562,24 +1458,7 @@ class DIgSILENTAgent:
             )
 
         except Exception as exc:
-            created_any = (
-                created_generator is not None
-                or created_cubicle is not None
-            )
             message = str(exc)
-
-            if created_any:
-                rolled_back = cls._rollback_connected_element(
-                    grid,
-                    bus,
-                    created_generator,
-                    created_cubicle,
-                    "ElmSym",
-                    name,
-                    cubicle_name,
-                )
-                message += f" | rolled_back={rolled_back}"
-
             log.error(f"Generator creation failed: {message}")
             return False, message
 
@@ -1620,15 +1499,6 @@ class DIgSILENTAgent:
         if not math.isfinite(length) or length <= 0:
             return False, "length_km must be a finite positive number"
 
-        grid = None
-        buses = ()
-        created_line = None
-        cubicles = ()
-        cubicle_names = (
-            f"{name} Cubicle 1",
-            f"{name} Cubicle 2",
-        )
-
         try:
             app = cls._get_application(open_digsilent)
 
@@ -1640,39 +1510,20 @@ class DIgSILENTAgent:
                 "line type",
             )
 
-            (
-                grid,
-                buses,
-                created_line,
-                cubicles,
-                cubicle_names,
-            ) = cls._create_connected_element(
+            _, _, created_line, actual = cls._create_connected_element(
                 app,
                 "ElmLne",
                 "Line",
                 name,
                 (requested_bus1, requested_bus2),
                 grid_name,
-                connection_attributes=("bus1", "bus2"),
-            )
-
-            actual = cls._set_and_verify_attributes(
-                created_line,
-                {
+                attributes={
                     "typ_id": template_type,
                     "dline": length,
                     "outserv": int(bool(out_of_service)),
                 },
-                "Line",
+                connection_attributes=("bus1", "bus2"),
             )
-
-            actual_name = str(
-                created_line.GetAttribute("loc_name")
-            )
-            if actual_name != name:
-                raise RuntimeError(
-                    "PowerFactory did not retain the line name"
-                )
 
             actual_length = float(actual["dline"])
             actual_outserv = int(actual["outserv"])
@@ -1693,24 +1544,7 @@ class DIgSILENTAgent:
             )
 
         except Exception as exc:
-            created_any = (
-                created_line is not None
-                or any(cubicle is not None for cubicle in cubicles)
-            )
             message = str(exc)
-
-            if created_any:
-                rolled_back = cls._rollback_connected_element(
-                    grid,
-                    buses,
-                    created_line,
-                    cubicles,
-                    "ElmLne",
-                    name,
-                    cubicle_names,
-                )
-                message += f" | rolled_back={rolled_back}"
-
             log.error(f"Line creation failed: {message}")
             return False, message
 
@@ -1750,15 +1584,6 @@ class DIgSILENTAgent:
         if not template_query:
             return False, "template_transformer must not be empty"
 
-        grid = None
-        buses = ()
-        created_transformer = None
-        cubicles = ()
-        cubicle_names = (
-            f"{name} Cubicle 1",
-            f"{name} Cubicle 2",
-        )
-
         try:
             app = cls._get_application(open_digsilent)
 
@@ -1770,38 +1595,21 @@ class DIgSILENTAgent:
                 "transformer type",
             )
 
-            (
-                grid,
-                buses,
-                created_transformer,
-                cubicles,
-                cubicle_names,
-            ) = cls._create_connected_element(
-                app,
-                "ElmTr2",
-                "Transformer",
-                name,
-                (high_voltage_bus, low_voltage_bus),
-                grid_name,
-                connection_attributes=("bushv", "buslv"),
-            )
-
-            actual = cls._set_and_verify_attributes(
-                created_transformer,
-                {
-                    "typ_id": template_type,
-                    "outserv": int(bool(out_of_service)),
-                },
-                "Transformer",
-            )
-
-            actual_name = str(
-                created_transformer.GetAttribute("loc_name")
-            )
-            if actual_name != name:
-                raise RuntimeError(
-                    "PowerFactory did not retain the transformer name"
+            _, _, created_transformer, actual = (
+                cls._create_connected_element(
+                    app,
+                    "ElmTr2",
+                    "Transformer",
+                    name,
+                    (high_voltage_bus, low_voltage_bus),
+                    grid_name,
+                    attributes={
+                        "typ_id": template_type,
+                        "outserv": int(bool(out_of_service)),
+                    },
+                    connection_attributes=("bushv", "buslv"),
                 )
+            )
 
             actual_outserv = int(actual["outserv"])
 
@@ -1820,24 +1628,7 @@ class DIgSILENTAgent:
             )
 
         except Exception as exc:
-            created_any = (
-                created_transformer is not None
-                or any(cubicle is not None for cubicle in cubicles)
-            )
             message = str(exc)
-
-            if created_any:
-                rolled_back = cls._rollback_connected_element(
-                    grid,
-                    buses,
-                    created_transformer,
-                    cubicles,
-                    "ElmTr2",
-                    name,
-                    cubicle_names,
-                )
-                message += f" | rolled_back={rolled_back}"
-
             log.error(f"Transformer creation failed: {message}")
             return False, message
 
