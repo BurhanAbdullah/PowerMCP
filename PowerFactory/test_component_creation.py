@@ -3,6 +3,14 @@ import unittest
 import Agent_DIgSILENT as agent_module
 
 
+class FakeGeneratorType:
+    def __init__(self, name):
+        self.name = name
+
+    def GetFullName(self):
+        return rf"\user\Library\{self.name}.TypSym"
+
+
 class FakeCubicle:
     def __init__(self, parent, name):
         self.parent = parent
@@ -88,18 +96,53 @@ class FakeLoad:
         self.parent.loads.remove(self)
 
 
+class FakeGenerator:
+    def __init__(self, parent, name):
+        self.parent = parent
+        self.attributes = {
+            "loc_name": name,
+            "typ_id": None,
+            "bus1": None,
+            "pgini": 0.0,
+            "qgini": 0.0,
+            "outserv": 0,
+        }
+
+    def GetAttribute(self, name):
+        return self.attributes[name]
+
+    def SetAttribute(self, name, value):
+        if name == "pgini" and self.parent.reject_generator_power:
+            return
+        self.attributes[name] = value
+
+    def GetClassName(self):
+        return "ElmSym"
+
+    def GetFullName(self):
+        return (
+            rf"\user\test.IntPrj\Grid\{self.attributes['loc_name']}.ElmSym"
+        )
+
+    def Delete(self):
+        self.parent.generators.remove(self)
+
+
 class FakeGrid:
     def __init__(
         self,
         name,
         reject_voltage=False,
         reject_load_power=False,
+        reject_generator_power=False,
     ):
         self.name = name
         self.reject_voltage = reject_voltage
         self.reject_load_power = reject_load_power
+        self.reject_generator_power = reject_generator_power
         self.terminals = []
         self.loads = []
+        self.generators = []
 
     def GetAttribute(self, name):
         if name == "loc_name":
@@ -111,6 +154,8 @@ class FakeGrid:
             return list(self.terminals)
         if query == "*.ElmLod":
             return list(self.loads)
+        if query == "*.ElmSym":
+            return list(self.generators)
         return []
 
     def CreateObject(self, class_name, name):
@@ -122,16 +167,23 @@ class FakeGrid:
             load = FakeLoad(self, name)
             self.loads.append(load)
             return load
+        if class_name == "ElmSym":
+            generator = FakeGenerator(self, name)
+            self.generators.append(generator)
+            return generator
         return None
 
 
 class FakeApplication:
-    def __init__(self, grids):
+    def __init__(self, grids, objects=None):
         self.grids = grids
+        self.objects = objects or {}
         self.shown = None
 
     def GetCalcRelevantObjects(self, query):
-        return self.grids if query == "*.ElmNet" else []
+        if query == "*.ElmNet":
+            return self.grids
+        return list(self.objects.get(query, []))
 
     def Show(self):
         self.shown = True
@@ -325,6 +377,101 @@ class ComponentCreationTest(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("rolled_back=True", message)
         self.assertEqual(failing_grid.loads, [])
+        self.assertEqual(failing_bus.cubicles, [])
+
+    def test_add_generator_validation_and_rollback(self):
+        grid = FakeGrid("Grid")
+        bus = grid.CreateObject("ElmTerm", "Bus 01")
+        machine_type = FakeGeneratorType("Test Machine Type")
+        template = grid.CreateObject("ElmSym", "G 01")
+        template.SetAttribute("typ_id", machine_type)
+
+        self.use_application(FakeApplication(
+            [grid],
+            {"G 01.ElmSym": [template]},
+        ))
+
+        ok, message = agent_module.DIgSILENTAgent.add_generator(
+            "MCP Test Generator",
+            "Bus 01",
+            "G 01.ElmSym",
+            25.0,
+            5.0,
+            out_of_service=True,
+            open_digsilent=False,
+        )
+
+        self.assertTrue(ok, message)
+        self.assertEqual(len(grid.generators), 2)
+        self.assertEqual(len(bus.cubicles), 1)
+
+        created = grid.generators[1]
+        self.assertIs(
+            created.GetAttribute("typ_id"),
+            machine_type,
+        )
+        self.assertIs(
+            created.GetAttribute("bus1"),
+            bus.cubicles[0],
+        )
+        self.assertEqual(created.GetAttribute("pgini"), 25.0)
+        self.assertEqual(created.GetAttribute("qgini"), 5.0)
+        self.assertEqual(created.GetAttribute("outserv"), 1)
+
+        ok, message = agent_module.DIgSILENTAgent.add_generator(
+            "MCP Test Generator",
+            "Bus 01",
+            "G 01.ElmSym",
+            25.0,
+            open_digsilent=False,
+        )
+        self.assertFalse(ok)
+        self.assertIn("already exists", message)
+        self.assertEqual(len(grid.generators), 2)
+
+        ok, message = agent_module.DIgSILENTAgent.add_generator(
+            "Missing Template Generator",
+            "Bus 01",
+            "Unknown.ElmSym",
+            10.0,
+            open_digsilent=False,
+        )
+        self.assertFalse(ok)
+        self.assertIn("Template generator not found", message)
+
+        failing_grid = FakeGrid(
+            "Grid",
+            reject_generator_power=True,
+        )
+        failing_bus = failing_grid.CreateObject(
+            "ElmTerm",
+            "Bus 01",
+        )
+        failing_template = failing_grid.CreateObject(
+            "ElmSym",
+            "G 01",
+        )
+        failing_template.SetAttribute("typ_id", machine_type)
+
+        self.use_application(FakeApplication(
+            [failing_grid],
+            {"G 01.ElmSym": [failing_template]},
+        ))
+
+        ok, message = agent_module.DIgSILENTAgent.add_generator(
+            "Rollback Generator",
+            "Bus 01",
+            "G 01.ElmSym",
+            10.0,
+            open_digsilent=False,
+        )
+
+        self.assertFalse(ok)
+        self.assertIn("rolled_back=True", message)
+        self.assertEqual(
+            failing_grid.generators,
+            [failing_template],
+        )
         self.assertEqual(failing_bus.cubicles, [])
 
 

@@ -16,6 +16,7 @@ Tools
   modify_parameter  Modify an object attribute by object query + variable name.
   add_bus           Create and verify a bus in an active grid.
   add_load          Create and connect a load to an existing bus.
+  add_generator     Create a typed synchronous generator on an existing bus.
   run_loadflow      Run a load flow calculation (ComLdf) on the active study case.
   run_short_circuit Run a short-circuit calculation (ComShc) on the active study case.
   run_simulation    Run the full pipeline from simulation_config.json.
@@ -342,6 +343,43 @@ def add_load(
         DIgSILENTAgent.add_load,
         load_name,
         bus_name,
+        active_power_mw,
+        reactive_power_mvar,
+        grid_name,
+        out_of_service,
+        open_digsilent,
+    )
+
+    return json.dumps({
+        "success": ok,
+        "message": message,
+    })
+
+
+@mcp.tool()
+def add_generator(
+    generator_name: str,
+    bus_name: str,
+    template_generator: str,
+    active_power_mw: float,
+    reactive_power_mvar: float = 0.0,
+    grid_name: str = "",
+    out_of_service: bool = False,
+    open_digsilent: bool = True,
+) -> str:
+    """
+    Create an ElmSym using the machine type of an existing generator.
+
+    The generator is connected to an existing bus and is removed with its
+    cubicle if initialization or verification fails.
+    """
+    _, DIgSILENTAgent = _load_modules()
+
+    ok, message = _pf(
+        DIgSILENTAgent.add_generator,
+        generator_name,
+        bus_name,
+        template_generator,
         active_power_mw,
         reactive_power_mvar,
         grid_name,

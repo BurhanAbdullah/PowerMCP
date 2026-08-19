@@ -1290,6 +1290,278 @@ class DIgSILENTAgent:
             log.error(f"Load creation failed: {message}")
             return False, message
 
+    @classmethod
+    def add_generator(
+        cls,
+        generator_name: str,
+        bus_name: str,
+        template_generator: str,
+        active_power_mw: float,
+        reactive_power_mvar: float = 0.0,
+        grid_name: str = "",
+        out_of_service: bool = False,
+        open_digsilent: bool = True,
+    ) -> tuple[bool, str]:
+        """Create an ElmSym using the type of an existing generator."""
+        import math
+
+        global pf
+        if pf is None:
+            _ensure_powerfactory_on_path()
+            import powerfactory as pf
+
+        name = str(generator_name or "").strip()
+        requested_bus = str(bus_name or "").strip()
+        template_query = str(template_generator or "").strip()
+
+        if not name:
+            return False, "generator_name must not be empty"
+        if not requested_bus:
+            return False, "bus_name must not be empty"
+        if not template_query:
+            return False, "template_generator must not be empty"
+
+        try:
+            active_power = float(active_power_mw)
+            reactive_power = float(reactive_power_mvar)
+        except (TypeError, ValueError):
+            return False, "active and reactive power must be numbers"
+
+        if not math.isfinite(active_power) or active_power < 0:
+            return False, "active_power_mw must be finite and non-negative"
+        if not math.isfinite(reactive_power):
+            return False, "reactive_power_mvar must be finite"
+
+        grid = None
+        bus = None
+        created_cubicle = None
+        created_generator = None
+        cubicle_name = f"{name} Cubicle"
+
+        try:
+            if cls._shared_app is None:
+                app = pf.GetApplicationExt()
+                if app is None:
+                    raise RuntimeError("GetApplicationExt() returned None")
+                cls._shared_app = app
+            else:
+                app = cls._shared_app
+
+            cls._apply_show_preference(app, open_digsilent)
+            grid = cls._select_grid(app, grid_name)
+
+            templates = (
+                app.GetCalcRelevantObjects(template_query) or []
+            )
+            if not templates:
+                raise RuntimeError(
+                    f"Template generator not found: {template_query}"
+                )
+            if len(templates) > 1:
+                raise RuntimeError(
+                    f"Multiple template generators matched: {template_query}"
+                )
+
+            template = templates[0]
+            if template.GetClassName() != "ElmSym":
+                raise RuntimeError(
+                    "template_generator must reference an ElmSym"
+                )
+
+            template_type = template.GetAttribute("typ_id")
+            if template_type is None:
+                raise RuntimeError(
+                    "Template generator has no synchronous-machine type"
+                )
+
+            existing_generators = (
+                grid.GetContents("*.ElmSym", 1) or []
+            )
+            if any(
+                str(generator.GetAttribute("loc_name")).casefold()
+                == name.casefold()
+                for generator in existing_generators
+            ):
+                raise RuntimeError(
+                    f"Generator already exists in the selected grid: {name}"
+                )
+
+            buses = grid.GetContents("*.ElmTerm", 1) or []
+            matching_buses = [
+                candidate
+                for candidate in buses
+                if str(candidate.GetAttribute("loc_name")).casefold()
+                == requested_bus.casefold()
+            ]
+            if not matching_buses:
+                raise RuntimeError(
+                    f"Bus not found in the selected grid: {requested_bus}"
+                )
+            if len(matching_buses) > 1:
+                raise RuntimeError(
+                    f"Multiple buses matched: {requested_bus}"
+                )
+
+            bus = matching_buses[0]
+            existing_cubicles = (
+                bus.GetContents("*.StaCubic", 1) or []
+            )
+            if any(
+                str(cubicle.GetAttribute("loc_name")).casefold()
+                == cubicle_name.casefold()
+                for cubicle in existing_cubicles
+            ):
+                raise RuntimeError(
+                    f"Cubicle already exists on bus: {cubicle_name}"
+                )
+
+            created_cubicle = bus.CreateObject(
+                "StaCubic",
+                cubicle_name,
+            )
+            if created_cubicle is None:
+                raise RuntimeError(
+                    f"Could not create cubicle on bus: {requested_bus}"
+                )
+
+            created_generator = grid.CreateObject("ElmSym", name)
+            if created_generator is None:
+                raise RuntimeError(
+                    f"Could not create generator: {name}"
+                )
+
+            created_generator.SetAttribute("typ_id", template_type)
+            created_generator.SetAttribute("bus1", created_cubicle)
+            created_generator.SetAttribute("pgini", active_power)
+            created_generator.SetAttribute("qgini", reactive_power)
+            created_generator.SetAttribute(
+                "outserv",
+                int(bool(out_of_service)),
+            )
+
+            actual_name = str(
+                created_generator.GetAttribute("loc_name")
+            )
+            actual_active_power = float(
+                created_generator.GetAttribute("pgini")
+            )
+            actual_reactive_power = float(
+                created_generator.GetAttribute("qgini")
+            )
+            actual_outserv = int(
+                created_generator.GetAttribute("outserv")
+            )
+            actual_cubicle = created_generator.GetAttribute("bus1")
+            actual_type = created_generator.GetAttribute("typ_id")
+
+            if actual_name != name:
+                raise RuntimeError(
+                    "PowerFactory did not retain the generator name"
+                )
+
+            if not math.isclose(
+                actual_active_power,
+                active_power,
+                rel_tol=1e-9,
+                abs_tol=1e-9,
+            ):
+                raise RuntimeError(
+                    "PowerFactory did not retain the active power"
+                )
+
+            if not math.isclose(
+                actual_reactive_power,
+                reactive_power,
+                rel_tol=1e-9,
+                abs_tol=1e-9,
+            ):
+                raise RuntimeError(
+                    "PowerFactory did not retain the reactive power"
+                )
+
+            if actual_outserv != int(bool(out_of_service)):
+                raise RuntimeError(
+                    "PowerFactory did not retain the service state"
+                )
+
+            if (
+                actual_cubicle is None
+                or actual_cubicle.GetFullName()
+                != created_cubicle.GetFullName()
+            ):
+                raise RuntimeError(
+                    "PowerFactory did not retain the bus connection"
+                )
+
+            if (
+                actual_type is None
+                or actual_type.GetFullName()
+                != template_type.GetFullName()
+            ):
+                raise RuntimeError(
+                    "PowerFactory did not retain the machine type"
+                )
+
+            full_name = created_generator.GetFullName()
+            log.ok(
+                f"Created generator '{name}' on bus '{requested_bus}'"
+            )
+            return (
+                True,
+                f"Created generator: {full_name} | "
+                f"bus={requested_bus} | "
+                f"template={template_query} | "
+                f"active_power_mw={actual_active_power} | "
+                f"reactive_power_mvar={actual_reactive_power} | "
+                f"out_of_service={bool(actual_outserv)}",
+            )
+
+        except Exception as exc:
+            created_any = (
+                created_generator is not None
+                or created_cubicle is not None
+            )
+            rolled_back = created_any
+
+            for created_object in (
+                created_generator,
+                created_cubicle,
+            ):
+                if created_object is not None:
+                    try:
+                        created_object.Delete()
+                    except Exception:
+                        rolled_back = False
+
+            if grid is not None:
+                remaining_generators = (
+                    grid.GetContents("*.ElmSym", 1) or []
+                )
+                if any(
+                    str(generator.GetAttribute("loc_name")).casefold()
+                    == name.casefold()
+                    for generator in remaining_generators
+                ):
+                    rolled_back = False
+
+            if bus is not None:
+                remaining_cubicles = (
+                    bus.GetContents("*.StaCubic", 1) or []
+                )
+                if any(
+                    str(cubicle.GetAttribute("loc_name")).casefold()
+                    == cubicle_name.casefold()
+                    for cubicle in remaining_cubicles
+                ):
+                    rolled_back = False
+
+            message = str(exc)
+            if created_any:
+                message += f" | rolled_back={rolled_back}"
+
+            log.error(f"Generator creation failed: {message}")
+            return False, message
+
     # ──────────────────────────────────────────────────────────────
     # # LOAD FLOW — run ComLdf on the currently active study case
     # ──────────────────────────────────────────────────────────────
