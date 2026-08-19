@@ -1162,6 +1162,7 @@ class DIgSILENTAgent:
         bus1_name: str,
         bus2_name: str,
         grid_name: str,
+        connection_attributes=("bus1", "bus2"),
     ):
         grid = cls._select_grid(app, grid_name)
 
@@ -1229,13 +1230,11 @@ class DIgSILENTAgent:
                     f"{element_name}"
                 )
 
-            element.SetAttribute("bus1", cubicles[0])
-            element.SetAttribute("bus2", cubicles[1])
-
             for attribute, cubicle in zip(
-                ("bus1", "bus2"),
+                connection_attributes,
                 cubicles,
             ):
+                element.SetAttribute(attribute, cubicle)
                 actual_cubicle = element.GetAttribute(attribute)
                 if (
                     actual_cubicle is None
@@ -1883,6 +1882,166 @@ class DIgSILENTAgent:
                 message += f" | rolled_back={rolled_back}"
 
             log.error(f"Line creation failed: {message}")
+            return False, message
+
+    @classmethod
+    def add_transformer(
+        cls,
+        transformer_name: str,
+        high_voltage_bus_name: str,
+        low_voltage_bus_name: str,
+        template_transformer: str,
+        grid_name: str = "",
+        out_of_service: bool = False,
+        open_digsilent: bool = True,
+    ) -> tuple[bool, str]:
+        """Create an ElmTr2 using the type of an existing transformer."""
+        name = str(transformer_name or "").strip()
+        high_voltage_bus = str(
+            high_voltage_bus_name or ""
+        ).strip()
+        low_voltage_bus = str(
+            low_voltage_bus_name or ""
+        ).strip()
+        template_query = str(
+            template_transformer or ""
+        ).strip()
+
+        if not name:
+            return False, "transformer_name must not be empty"
+        if not high_voltage_bus or not low_voltage_bus:
+            return (
+                False,
+                "high_voltage_bus_name and low_voltage_bus_name "
+                "must not be empty",
+            )
+        if high_voltage_bus.casefold() == low_voltage_bus.casefold():
+            return False, "Transformer buses must be different"
+        if not template_query:
+            return False, "template_transformer must not be empty"
+
+        grid = None
+        buses = ()
+        created_transformer = None
+        cubicles = ()
+        cubicle_names = (
+            f"{name} Cubicle 1",
+            f"{name} Cubicle 2",
+        )
+
+        try:
+            app = cls._get_application(open_digsilent)
+
+            templates = (
+                app.GetCalcRelevantObjects(template_query) or []
+            )
+            if not templates:
+                raise RuntimeError(
+                    f"Template transformer not found: {template_query}"
+                )
+            if len(templates) > 1:
+                raise RuntimeError(
+                    f"Multiple template transformers matched: "
+                    f"{template_query}"
+                )
+
+            template = templates[0]
+            if template.GetClassName() != "ElmTr2":
+                raise RuntimeError(
+                    "template_transformer must reference an ElmTr2"
+                )
+
+            template_type = template.GetAttribute("typ_id")
+            if template_type is None:
+                raise RuntimeError(
+                    "Template transformer has no transformer type"
+                )
+
+            (
+                grid,
+                buses,
+                created_transformer,
+                cubicles,
+                cubicle_names,
+            ) = cls._create_two_terminal_element(
+                app,
+                "ElmTr2",
+                "Transformer",
+                name,
+                high_voltage_bus,
+                low_voltage_bus,
+                grid_name,
+                connection_attributes=("bushv", "buslv"),
+            )
+
+            created_transformer.SetAttribute(
+                "typ_id",
+                template_type,
+            )
+            created_transformer.SetAttribute(
+                "outserv",
+                int(bool(out_of_service)),
+            )
+
+            actual_name = str(
+                created_transformer.GetAttribute("loc_name")
+            )
+            actual_outserv = int(
+                created_transformer.GetAttribute("outserv")
+            )
+            actual_type = created_transformer.GetAttribute("typ_id")
+
+            if actual_name != name:
+                raise RuntimeError(
+                    "PowerFactory did not retain the transformer name"
+                )
+            if actual_outserv != int(bool(out_of_service)):
+                raise RuntimeError(
+                    "PowerFactory did not retain the service state"
+                )
+            if (
+                actual_type is None
+                or actual_type.GetFullName()
+                != template_type.GetFullName()
+            ):
+                raise RuntimeError(
+                    "PowerFactory did not retain the transformer type"
+                )
+
+            full_name = created_transformer.GetFullName()
+            log.ok(
+                f"Created transformer '{name}' between "
+                f"'{high_voltage_bus}' and '{low_voltage_bus}'"
+            )
+            return (
+                True,
+                f"Created transformer: {full_name} | "
+                f"high_voltage_bus={high_voltage_bus} | "
+                f"low_voltage_bus={low_voltage_bus} | "
+                f"template={template_query} | "
+                f"out_of_service={bool(actual_outserv)}",
+            )
+
+        except Exception as exc:
+            created_any = (
+                created_transformer is not None
+                or any(cubicle is not None for cubicle in cubicles)
+            )
+            message = str(exc)
+
+            if created_any:
+                rolled_back = cls._rollback_two_terminal_element(
+                    grid,
+                    buses,
+                    created_transformer,
+                    cubicles,
+                    "ElmTr2",
+                    name,
+                    cubicle_names,
+                )
+                message += f" | rolled_back={rolled_back}"
+
+            log.error(f"Transformer creation failed: {message}")
             return False, message
 
     # ──────────────────────────────────────────────────────────────

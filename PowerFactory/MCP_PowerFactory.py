@@ -19,6 +19,7 @@ Tools
   add_load          Create and connect a load to an existing bus.
   add_generator     Create a typed synchronous generator on an existing bus.
   add_line          Create a typed line between two existing buses.
+  add_transformer   Create a typed two-winding transformer between buses.
   run_loadflow      Run a load flow calculation (ComLdf) on the active study case.
   run_short_circuit Run a short-circuit calculation (ComShc) on the active study case.
   run_simulation    Run the full pipeline from simulation_config.json.
@@ -421,6 +422,41 @@ def add_line(
         bus2_name,
         template_line,
         length_km,
+        grid_name,
+        out_of_service,
+        open_digsilent,
+    )
+
+    return json.dumps({
+        "success": ok,
+        "message": message,
+    })
+
+
+@mcp.tool()
+def add_transformer(
+    transformer_name: str,
+    high_voltage_bus_name: str,
+    low_voltage_bus_name: str,
+    template_transformer: str,
+    grid_name: str = "",
+    out_of_service: bool = False,
+    open_digsilent: bool = True,
+) -> str:
+    """
+    Create a two-winding transformer using an existing transformer type.
+
+    The transformer and both cubicles are removed automatically if
+    initialization or verification fails.
+    """
+    _, DIgSILENTAgent = _load_modules()
+
+    ok, message = _pf(
+        DIgSILENTAgent.add_transformer,
+        transformer_name,
+        high_voltage_bus_name,
+        low_voltage_bus_name,
+        template_transformer,
         grid_name,
         out_of_service,
         open_digsilent,
