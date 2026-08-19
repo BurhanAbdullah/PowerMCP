@@ -897,7 +897,179 @@ class DIgSILENTAgent:
             return False, str(e)
 
     # ──────────────────────────────────────────────────────────────
-    # LOAD FLOW — run ComLdf on the currently active study case
+    # ADD BUS - create a verified ElmTerm in an active grid
+    # ──────────────────────────────────────────────────────────────
+    @classmethod
+    def add_bus(
+        cls,
+        bus_name: str,
+        nominal_voltage_kv: float,
+        grid_name: str = "",
+        out_of_service: bool = False,
+        open_digsilent: bool = True,
+    ) -> tuple[bool, str]:
+        """Create a bus and remove it automatically if setup fails."""
+        import math
+
+        global pf
+        if pf is None:
+            _ensure_powerfactory_on_path()
+            import powerfactory as pf
+
+        name = str(bus_name or "").strip()
+        requested_grid = str(grid_name or "").strip()
+
+        if not name:
+            return False, "bus_name must not be empty"
+
+        try:
+            voltage = float(nominal_voltage_kv)
+        except (TypeError, ValueError):
+            return False, "nominal_voltage_kv must be a number"
+
+        if not math.isfinite(voltage) or voltage <= 0:
+            return False, "nominal_voltage_kv must be a finite positive number"
+
+        created_bus = None
+        grid = None
+
+        try:
+            if cls._shared_app is None:
+                app = pf.GetApplicationExt()
+                if app is None:
+                    raise RuntimeError("GetApplicationExt() returned None")
+                cls._shared_app = app
+            else:
+                app = cls._shared_app
+
+            cls._apply_show_preference(app, open_digsilent)
+
+            grids = app.GetCalcRelevantObjects("*.ElmNet") or []
+            if not grids:
+                raise RuntimeError("No calculation-relevant grids were found")
+
+            if requested_grid:
+                matching_grids = [
+                    candidate
+                    for candidate in grids
+                    if str(
+                        candidate.GetAttribute("loc_name")
+                    ).casefold() == requested_grid.casefold()
+                ]
+                if not matching_grids:
+                    available = ", ".join(
+                        str(candidate.GetAttribute("loc_name"))
+                        for candidate in grids
+                    )
+                    raise RuntimeError(
+                        f"Grid not found: {requested_grid}. "
+                        f"Available grids: {available}"
+                    )
+                grid = matching_grids[0]
+            elif len(grids) == 1:
+                grid = grids[0]
+            else:
+                available = ", ".join(
+                    str(candidate.GetAttribute("loc_name"))
+                    for candidate in grids
+                )
+                raise RuntimeError(
+                    "Multiple grids are active; provide grid_name. "
+                    f"Available grids: {available}"
+                )
+
+            existing = grid.GetContents("*.ElmTerm", 1) or []
+            if any(
+                str(obj.GetAttribute("loc_name")).casefold()
+                == name.casefold()
+                for obj in existing
+            ):
+                raise RuntimeError(
+                    f"Bus already exists in the selected grid: {name}"
+                )
+
+            created_bus = grid.CreateObject("ElmTerm", name)
+            if created_bus is None:
+                raise RuntimeError(f"Could not create bus: {name}")
+
+            created_bus.SetAttribute("uknom", voltage)
+            created_bus.SetAttribute(
+                "outserv",
+                int(bool(out_of_service)),
+            )
+
+            actual_name = str(
+                created_bus.GetAttribute("loc_name")
+            )
+            actual_voltage = float(
+                created_bus.GetAttribute("uknom")
+            )
+            actual_outserv = int(
+                created_bus.GetAttribute("outserv")
+            )
+
+            if actual_name != name:
+                raise RuntimeError(
+                    "PowerFactory did not retain the requested bus name"
+                )
+
+            if not math.isclose(
+                actual_voltage,
+                voltage,
+                rel_tol=1e-9,
+                abs_tol=1e-9,
+            ):
+                raise RuntimeError(
+                    "PowerFactory did not retain the requested nominal voltage"
+                )
+
+            if actual_outserv != int(bool(out_of_service)):
+                raise RuntimeError(
+                    "PowerFactory did not retain the requested service state"
+                )
+
+            grid_label = str(grid.GetAttribute("loc_name"))
+            full_name = created_bus.GetFullName()
+
+            log.ok(
+                f"Created bus '{name}' in grid '{grid_label}' "
+                f"at {actual_voltage} kV"
+            )
+            return (
+                True,
+                f"Created bus: {full_name} | "
+                f"nominal_voltage_kv={actual_voltage} | "
+                f"out_of_service={bool(actual_outserv)}",
+            )
+
+        except Exception as exc:
+            rolled_back = False
+
+            if created_bus is not None:
+                try:
+                    created_bus.Delete()
+                    remaining = (
+                        grid.GetContents("*.ElmTerm", 1)
+                        if grid is not None
+                        else []
+                    ) or []
+                    rolled_back = not any(
+                        str(obj.GetAttribute("loc_name")).casefold()
+                        == name.casefold()
+                        for obj in remaining
+                    )
+                except Exception:
+                    rolled_back = False
+
+            message = str(exc)
+            if created_bus is not None:
+                message += f" | rolled_back={rolled_back}"
+
+            log.error(f"Bus creation failed: {message}")
+            return False, message
+
+    # ──────────────────────────────────────────────────────────────
+    # # LOAD FLOW — run ComLdf on the currently active study case
     # ──────────────────────────────────────────────────────────────
 
     @classmethod

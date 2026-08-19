@@ -14,6 +14,7 @@ Tools
   import_project    Import a .pfd file and activate it in PowerFactory.
   create_study_case Create/activate a study case by name (no simulation run).
   modify_parameter  Modify an object attribute by object query + variable name.
+  add_bus           Create and verify a bus in an active grid.
   run_loadflow      Run a load flow calculation (ComLdf) on the active study case.
   run_short_circuit Run a short-circuit calculation (ComShc) on the active study case.
   run_simulation    Run the full pipeline from simulation_config.json.
@@ -285,6 +286,37 @@ def modify_parameter(
     _, DIgSILENTAgent = _load_modules()
     ok, msg = _pf(DIgSILENTAgent.modify_parameter, object_name, variable, new_value, open_digsilent)
     return json.dumps({"success": ok, "message": msg})
+
+
+@mcp.tool()
+def add_bus(
+    bus_name: str,
+    nominal_voltage_kv: float,
+    grid_name: str = "",
+    out_of_service: bool = False,
+    open_digsilent: bool = True,
+) -> str:
+    """
+    Create a bus in an active PowerFactory grid.
+
+    The operation rejects duplicate names, verifies all assigned values,
+    and removes the created bus automatically if initialization fails.
+    """
+    _, DIgSILENTAgent = _load_modules()
+
+    ok, message = _pf(
+        DIgSILENTAgent.add_bus,
+        bus_name,
+        nominal_voltage_kv,
+        grid_name,
+        out_of_service,
+        open_digsilent,
+    )
+
+    return json.dumps({
+        "success": ok,
+        "message": message,
+    })
 
 
 @mcp.tool()
