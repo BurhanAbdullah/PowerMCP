@@ -3,277 +3,70 @@ import unittest
 import Agent_DIgSILENT as agent_module
 
 
-class FakeGeneratorType:
-    def __init__(self, name):
-        self.name = name
+DEFAULTS = {
+    "ElmTerm": {"uknom": 0.0, "outserv": 0},
+    "ElmLod": {"bus1": None, "plini": 0.0, "qlini": 0.0, "outserv": 0},
+    "ElmSym": {
+        "typ_id": None,
+        "bus1": None,
+        "pgini": 0.0,
+        "qgini": 0.0,
+        "outserv": 0,
+    },
+    "ElmLne": {
+        "typ_id": None,
+        "bus1": None,
+        "bus2": None,
+        "dline": 0.0,
+        "outserv": 0,
+    },
+    "ElmTr2": {
+        "typ_id": None,
+        "bushv": None,
+        "buslv": None,
+        "outserv": 0,
+    },
+}
 
-    def GetFullName(self):
-        return rf"\user\Library\{self.name}.TypSym"
 
-
-class FakeCubicle:
-    def __init__(self, parent, name):
+class FakeObject:
+    def __init__(self, parent, class_name, name):
         self.parent = parent
-        self.attributes = {"loc_name": name}
+        self.class_name = class_name
+        self.attributes = {"loc_name": name, **DEFAULTS.get(class_name, {})}
+        self.objects = {}
+        self.reject_attribute = None
 
-    def GetAttribute(self, name):
-        return self.attributes[name]
-
-    def GetFullName(self):
-        return (
-            f"{self.parent.GetFullName()}\\"
-            f"{self.attributes['loc_name']}.StaCubic"
-        )
-
-    def Delete(self):
-        self.parent.cubicles.remove(self)
-
-
-class FakeLineType:
-    def __init__(self, name):
-        self.name = name
-
-    def GetFullName(self):
-        return rf"\user\Library\{self.name}.TypLne"
-
-
-class FakeTransformerType:
-    def __init__(self, name):
-        self.name = name
-
-    def GetFullName(self):
-        return rf"\user\Library\{self.name}.TypTr2"
-
-
-class FakeBus:
-    def __init__(self, parent, name):
-        self.parent = parent
-        self.cubicles = []
-        self.attributes = {
-            "loc_name": name,
-            "uknom": 0.0,
-            "outserv": 0,
-        }
+    def __getitem__(self, class_name):
+        return self.objects.setdefault(class_name, [])
 
     def GetAttribute(self, name):
         return self.attributes[name]
 
     def SetAttribute(self, name, value):
-        if name == "uknom" and self.parent.reject_voltage:
-            return
-        self.attributes[name] = value
+        root = self
+        while root.parent is not None:
+            root = root.parent
+        if name != root.reject_attribute:
+            self.attributes[name] = value
+
+    def GetClassName(self):
+        return self.class_name
 
     def GetFullName(self):
-        return (
-            rf"\user\test.IntPrj\Grid\{self.attributes['loc_name']}.ElmTerm"
-        )
+        prefix = self.parent.GetFullName() if self.parent else r"\user"
+        return f"{prefix}\\{self.attributes['loc_name']}.{self.class_name}"
 
     def GetContents(self, query, recursive):
-        if query == "*.StaCubic":
-            return list(self.cubicles)
-        return []
+        return list(self[query.rsplit(".", 1)[-1]])
 
     def CreateObject(self, class_name, name):
-        if class_name != "StaCubic":
-            return None
-        cubicle = FakeCubicle(self, name)
-        self.cubicles.append(cubicle)
-        return cubicle
+        obj = FakeObject(self, class_name, name)
+        self[class_name].append(obj)
+        return obj
 
     def Delete(self):
-        self.parent.terminals.remove(self)
-
-
-class FakeLoad:
-    def __init__(self, parent, name):
-        self.parent = parent
-        self.attributes = {
-            "loc_name": name,
-            "bus1": None,
-            "plini": 0.0,
-            "qlini": 0.0,
-            "outserv": 0,
-        }
-
-    def GetAttribute(self, name):
-        return self.attributes[name]
-
-    def SetAttribute(self, name, value):
-        if name == "plini" and self.parent.reject_load_power:
-            return
-        self.attributes[name] = value
-
-    def GetFullName(self):
-        return (
-            rf"\user\test.IntPrj\Grid\{self.attributes['loc_name']}.ElmLod"
-        )
-
-    def Delete(self):
-        self.parent.loads.remove(self)
-
-
-class FakeGenerator:
-    def __init__(self, parent, name):
-        self.parent = parent
-        self.attributes = {
-            "loc_name": name,
-            "typ_id": None,
-            "bus1": None,
-            "pgini": 0.0,
-            "qgini": 0.0,
-            "outserv": 0,
-        }
-
-    def GetAttribute(self, name):
-        return self.attributes[name]
-
-    def SetAttribute(self, name, value):
-        if name == "pgini" and self.parent.reject_generator_power:
-            return
-        self.attributes[name] = value
-
-    def GetClassName(self):
-        return "ElmSym"
-
-    def GetFullName(self):
-        return (
-            rf"\user\test.IntPrj\Grid\{self.attributes['loc_name']}.ElmSym"
-        )
-
-    def Delete(self):
-        self.parent.generators.remove(self)
-
-
-class FakeLine:
-    def __init__(self, parent, name):
-        self.parent = parent
-        self.attributes = {
-            "loc_name": name,
-            "typ_id": None,
-            "bus1": None,
-            "bus2": None,
-            "dline": 0.0,
-            "outserv": 0,
-        }
-
-    def GetAttribute(self, name):
-        return self.attributes[name]
-
-    def SetAttribute(self, name, value):
-        if name == "dline" and self.parent.reject_line_length:
-            return
-        self.attributes[name] = value
-
-    def GetClassName(self):
-        return "ElmLne"
-
-    def GetFullName(self):
-        return (
-            rf"\user\test.IntPrj\Grid\{self.attributes['loc_name']}.ElmLne"
-        )
-
-    def Delete(self):
-        self.parent.lines.remove(self)
-
-
-class FakeTransformer:
-    def __init__(self, parent, name):
-        self.parent = parent
-        self.attributes = {
-            "loc_name": name,
-            "typ_id": None,
-            "bushv": None,
-            "buslv": None,
-            "outserv": 0,
-        }
-
-    def GetAttribute(self, name):
-        return self.attributes[name]
-
-    def SetAttribute(self, name, value):
-        if name == "typ_id" and self.parent.reject_transformer_type:
-            return
-        self.attributes[name] = value
-
-    def GetClassName(self):
-        return "ElmTr2"
-
-    def GetFullName(self):
-        return (
-            rf"\user\test.IntPrj\Grid\{self.attributes['loc_name']}.ElmTr2"
-        )
-
-    def Delete(self):
-        self.parent.transformers.remove(self)
-
-
-class FakeGrid:
-    def __init__(
-        self,
-        name,
-        reject_voltage=False,
-        reject_load_power=False,
-        reject_generator_power=False,
-        reject_line_length=False,
-        reject_transformer_type=False,
-    ):
-        self.name = name
-        self.reject_voltage = reject_voltage
-        self.reject_load_power = reject_load_power
-        self.reject_generator_power = reject_generator_power
-        self.reject_line_length = reject_line_length
-        self.reject_transformer_type = reject_transformer_type
-        self.terminals = []
-        self.loads = []
-        self.generators = []
-        self.lines = []
-        self.transformers = []
-
-    def GetAttribute(self, name):
-        if name == "loc_name":
-            return self.name
-        raise KeyError(name)
-
-    def GetContents(self, query, recursive):
-        if query == "*.ElmTerm":
-            return list(self.terminals)
-        if query == "*.ElmLod":
-            return list(self.loads)
-        if query == "*.ElmSym":
-            return list(self.generators)
-        if query == "*.ElmLne":
-            return list(self.lines)
-        if query == "*.ElmTr2":
-            return list(self.transformers)
-        return []
-
-    def CreateObject(self, class_name, name):
-        if class_name == "ElmTerm":
-            bus = FakeBus(self, name)
-            self.terminals.append(bus)
-            return bus
-
-        if class_name == "ElmLod":
-            load = FakeLoad(self, name)
-            self.loads.append(load)
-            return load
-
-        if class_name == "ElmSym":
-            generator = FakeGenerator(self, name)
-            self.generators.append(generator)
-            return generator
-
-        if class_name == "ElmLne":
-            line = FakeLine(self, name)
-            self.lines.append(line)
-            return line
-
-        if class_name == "ElmTr2":
-            transformer = FakeTransformer(self, name)
-            self.transformers.append(transformer)
-            return transformer
-
-        return None
+        self.parent[self.class_name].remove(self)
 
 
 class FakeApplication:
@@ -315,57 +108,70 @@ class ComponentCreationTest(unittest.TestCase):
         agent_module.pf = FakePowerFactory(app)
         agent_module.DIgSILENTAgent._shared_app = None
 
+    def network(self, bus_names=(), template=None):
+        grid = FakeObject(None, "ElmNet", "Grid")
+        buses = {
+            name: grid.CreateObject("ElmTerm", name)
+            for name in bus_names
+        }
+        objects = {}
+        template_object = template_type = None
+        if template:
+            query, class_name, type_class = template
+            template_type = FakeObject(None, type_class, "Test Type")
+            template_object = grid.CreateObject(
+                class_name,
+                query.rsplit(".", 1)[0],
+            )
+            template_object.SetAttribute("typ_id", template_type)
+            objects[query] = [template_object]
+        self.use_application(FakeApplication([grid], objects))
+        return grid, buses, template_object, template_type
+
+    def assert_failed(self, result, text):
+        ok, message = result
+        self.assertFalse(ok)
+        self.assertIn(text, message)
+        return message
+
+    def assert_attributes(self, obj, expected):
+        for name, value in expected.items():
+            self.assertEqual(obj.GetAttribute(name), value)
+
     def test_add_bus_validation_and_rollback(self):
-        grid = FakeGrid("Grid")
-        self.use_application(FakeApplication([grid]))
-
+        grid, _, _, _ = self.network()
         ok, message = agent_module.DIgSILENTAgent.add_bus(
-            "MCP Test Bus",
-            110.0,
-            open_digsilent=False,
+            "MCP Test Bus", 110.0, open_digsilent=False
         )
-
         self.assertTrue(ok, message)
-        self.assertEqual(len(grid.terminals), 1)
-        self.assertEqual(
-            grid.terminals[0].GetAttribute("uknom"),
-            110.0,
-        )
-        self.assertEqual(
-            grid.terminals[0].GetAttribute("outserv"),
-            0,
+        self.assert_attributes(
+            grid["ElmTerm"][0],
+            {"uknom": 110.0, "outserv": 0},
         )
 
-        ok, message = agent_module.DIgSILENTAgent.add_bus(
-            "MCP Test Bus",
-            110.0,
-            open_digsilent=False,
+        self.assert_failed(
+            agent_module.DIgSILENTAgent.add_bus(
+                "MCP Test Bus", 110.0, open_digsilent=False
+            ),
+            "already exists",
         )
-        self.assertFalse(ok)
-        self.assertIn("already exists", message)
-        self.assertEqual(len(grid.terminals), 1)
-
-        ok, message = agent_module.DIgSILENTAgent.add_bus(
-            "Invalid Bus",
-            -1.0,
-            open_digsilent=False,
+        self.assert_failed(
+            agent_module.DIgSILENTAgent.add_bus(
+                "Invalid Bus", -1.0, open_digsilent=False
+            ),
+            "finite positive",
         )
-        self.assertFalse(ok)
-        self.assertIn("finite positive", message)
-        self.assertEqual(len(grid.terminals), 1)
+        self.assertEqual(len(grid["ElmTerm"]), 1)
 
-        grid_a = FakeGrid("Grid A")
-        grid_b = FakeGrid("Grid B")
+        grid_a = FakeObject(None, "ElmNet", "Grid A")
+        grid_b = FakeObject(None, "ElmNet", "Grid B")
         self.use_application(FakeApplication([grid_a, grid_b]))
-
-        ok, message = agent_module.DIgSILENTAgent.add_bus(
-            "Ambiguous Bus",
-            20.0,
-            open_digsilent=False,
+        self.assert_failed(
+            agent_module.DIgSILENTAgent.add_bus(
+                "Ambiguous Bus", 20.0, open_digsilent=False
+            ),
+            "Multiple grids",
         )
-        self.assertFalse(ok)
-        self.assertIn("Multiple grids", message)
-
         ok, message = agent_module.DIgSILENTAgent.add_bus(
             "Selected Bus",
             20.0,
@@ -374,33 +180,22 @@ class ComponentCreationTest(unittest.TestCase):
             open_digsilent=False,
         )
         self.assertTrue(ok, message)
-        self.assertEqual(len(grid_a.terminals), 0)
-        self.assertEqual(len(grid_b.terminals), 1)
-        self.assertEqual(
-            grid_b.terminals[0].GetAttribute("outserv"),
-            1,
-        )
+        self.assertEqual(grid_a["ElmTerm"], [])
+        self.assertEqual(grid_b["ElmTerm"][0].GetAttribute("outserv"), 1)
 
-        failing_grid = FakeGrid(
-            "Grid",
-            reject_voltage=True,
+        failing_grid, _, _, _ = self.network()
+        failing_grid.reject_attribute = "uknom"
+        self.assert_failed(
+            agent_module.DIgSILENTAgent.add_bus(
+                "Rollback Bus", 110.0, open_digsilent=False
+            ),
+            "rolled_back=True",
         )
-        self.use_application(FakeApplication([failing_grid]))
-
-        ok, message = agent_module.DIgSILENTAgent.add_bus(
-            "Rollback Bus",
-            110.0,
-            open_digsilent=False,
-        )
-        self.assertFalse(ok)
-        self.assertIn("rolled_back=True", message)
-        self.assertEqual(failing_grid.terminals, [])
+        self.assertEqual(failing_grid["ElmTerm"], [])
 
     def test_add_load_validation_and_rollback(self):
-        grid = FakeGrid("Grid")
-        bus = grid.CreateObject("ElmTerm", "Bus 01")
-        self.use_application(FakeApplication([grid]))
-
+        grid, buses, _, _ = self.network(("Bus 01",))
+        bus = buses["Bus 01"]
         ok, message = agent_module.DIgSILENTAgent.add_load(
             "MCP Test Load",
             "Bus 01",
@@ -409,419 +204,257 @@ class ComponentCreationTest(unittest.TestCase):
             out_of_service=True,
             open_digsilent=False,
         )
-
         self.assertTrue(ok, message)
-        self.assertEqual(len(grid.loads), 1)
-        self.assertEqual(len(bus.cubicles), 1)
-        self.assertIs(
-            grid.loads[0].GetAttribute("bus1"),
-            bus.cubicles[0],
-        )
-        self.assertEqual(
-            grid.loads[0].GetAttribute("plini"),
-            50.0,
-        )
-        self.assertEqual(
-            grid.loads[0].GetAttribute("qlini"),
-            12.5,
-        )
-        self.assertEqual(
-            grid.loads[0].GetAttribute("outserv"),
-            1,
+        created = grid["ElmLod"][0]
+        self.assertIs(created.GetAttribute("bus1"), bus["StaCubic"][0])
+        self.assert_attributes(
+            created,
+            {"plini": 50.0, "qlini": 12.5, "outserv": 1},
         )
 
-        ok, message = agent_module.DIgSILENTAgent.add_load(
-            "MCP Test Load",
-            "Bus 01",
-            50.0,
-            open_digsilent=False,
+        self.assert_failed(
+            agent_module.DIgSILENTAgent.add_load(
+                "MCP Test Load", "Bus 01", 50.0, open_digsilent=False
+            ),
+            "already exists",
         )
-        self.assertFalse(ok)
-        self.assertIn("already exists", message)
-        self.assertEqual(len(grid.loads), 1)
-        self.assertEqual(len(bus.cubicles), 1)
-
-        ok, message = agent_module.DIgSILENTAgent.add_load(
-            "Missing Bus Load",
-            "Unknown Bus",
-            10.0,
-            open_digsilent=False,
+        self.assert_failed(
+            agent_module.DIgSILENTAgent.add_load(
+                "Missing Bus Load", "Unknown Bus", 10.0, open_digsilent=False
+            ),
+            "Bus not found",
         )
-        self.assertFalse(ok)
-        self.assertIn("Bus not found", message)
-
-        ok, message = agent_module.DIgSILENTAgent.add_load(
-            "Invalid Load",
-            "Bus 01",
-            -1.0,
-            open_digsilent=False,
-        )
-        self.assertFalse(ok)
-        self.assertIn("finite and non-negative", message)
-
-        failing_grid = FakeGrid(
-            "Grid",
-            reject_load_power=True,
-        )
-        failing_bus = failing_grid.CreateObject(
-            "ElmTerm",
-            "Bus 01",
-        )
-        self.use_application(FakeApplication([failing_grid]))
-
-        ok, message = agent_module.DIgSILENTAgent.add_load(
-            "Rollback Load",
-            "Bus 01",
-            10.0,
-            open_digsilent=False,
+        self.assert_failed(
+            agent_module.DIgSILENTAgent.add_load(
+                "Invalid Load", "Bus 01", -1.0, open_digsilent=False
+            ),
+            "finite and non-negative",
         )
 
-        self.assertFalse(ok)
-        self.assertIn("rolled_back=True", message)
-        self.assertEqual(failing_grid.loads, [])
-        self.assertEqual(failing_bus.cubicles, [])
+        failing_grid, buses, _, _ = self.network(("Bus 01",))
+        failing_grid.reject_attribute = "plini"
+        self.assert_failed(
+            agent_module.DIgSILENTAgent.add_load(
+                "Rollback Load", "Bus 01", 10.0, open_digsilent=False
+            ),
+            "rolled_back=True",
+        )
+        self.assertEqual(failing_grid["ElmLod"], [])
+        self.assertEqual(buses["Bus 01"]["StaCubic"], [])
 
     def test_add_generator_validation_and_rollback(self):
-        grid = FakeGrid("Grid")
-        bus = grid.CreateObject("ElmTerm", "Bus 01")
-        machine_type = FakeGeneratorType("Test Machine Type")
-        template = grid.CreateObject("ElmSym", "G 01")
-        template.SetAttribute("typ_id", machine_type)
-
-        self.use_application(FakeApplication(
-            [grid],
-            {"G 01.ElmSym": [template]},
-        ))
-
+        template = ("G 01.ElmSym", "ElmSym", "TypSym")
+        grid, buses, template_object, machine_type = self.network(
+            ("Bus 01",), template
+        )
         ok, message = agent_module.DIgSILENTAgent.add_generator(
             "MCP Test Generator",
             "Bus 01",
-            "G 01.ElmSym",
+            template[0],
             25.0,
             5.0,
             out_of_service=True,
             open_digsilent=False,
         )
-
         self.assertTrue(ok, message)
-        self.assertEqual(len(grid.generators), 2)
-        self.assertEqual(len(bus.cubicles), 1)
-
-        created = grid.generators[1]
+        created = grid["ElmSym"][1]
+        self.assertIs(created.GetAttribute("typ_id"), machine_type)
         self.assertIs(
-            created.GetAttribute("typ_id"),
-            machine_type,
+            created.GetAttribute("bus1"), buses["Bus 01"]["StaCubic"][0]
         )
-        self.assertIs(
-            created.GetAttribute("bus1"),
-            bus.cubicles[0],
-        )
-        self.assertEqual(created.GetAttribute("pgini"), 25.0)
-        self.assertEqual(created.GetAttribute("qgini"), 5.0)
-        self.assertEqual(created.GetAttribute("outserv"), 1)
-
-        ok, message = agent_module.DIgSILENTAgent.add_generator(
-            "MCP Test Generator",
-            "Bus 01",
-            "G 01.ElmSym",
-            25.0,
-            open_digsilent=False,
-        )
-        self.assertFalse(ok)
-        self.assertIn("already exists", message)
-        self.assertEqual(len(grid.generators), 2)
-
-        ok, message = agent_module.DIgSILENTAgent.add_generator(
-            "Missing Template Generator",
-            "Bus 01",
-            "Unknown.ElmSym",
-            10.0,
-            open_digsilent=False,
-        )
-        self.assertFalse(ok)
-        self.assertIn("Template generator not found", message)
-
-        failing_grid = FakeGrid(
-            "Grid",
-            reject_generator_power=True,
-        )
-        failing_bus = failing_grid.CreateObject(
-            "ElmTerm",
-            "Bus 01",
-        )
-        failing_template = failing_grid.CreateObject(
-            "ElmSym",
-            "G 01",
-        )
-        failing_template.SetAttribute("typ_id", machine_type)
-
-        self.use_application(FakeApplication(
-            [failing_grid],
-            {"G 01.ElmSym": [failing_template]},
-        ))
-
-        ok, message = agent_module.DIgSILENTAgent.add_generator(
-            "Rollback Generator",
-            "Bus 01",
-            "G 01.ElmSym",
-            10.0,
-            open_digsilent=False,
+        self.assert_attributes(
+            created,
+            {"pgini": 25.0, "qgini": 5.0, "outserv": 1},
         )
 
-        self.assertFalse(ok)
-        self.assertIn("rolled_back=True", message)
-        self.assertEqual(
-            failing_grid.generators,
-            [failing_template],
+        self.assert_failed(
+            agent_module.DIgSILENTAgent.add_generator(
+                "MCP Test Generator",
+                "Bus 01",
+                template[0],
+                25.0,
+                open_digsilent=False,
+            ),
+            "already exists",
         )
-        self.assertEqual(failing_bus.cubicles, [])
+        self.assert_failed(
+            agent_module.DIgSILENTAgent.add_generator(
+                "Missing Template Generator",
+                "Bus 01",
+                "Unknown.ElmSym",
+                10.0,
+                open_digsilent=False,
+            ),
+            "Template generator not found",
+        )
+
+        failing_grid, buses, failing_template, _ = self.network(
+            ("Bus 01",), template
+        )
+        failing_grid.reject_attribute = "pgini"
+        self.assert_failed(
+            agent_module.DIgSILENTAgent.add_generator(
+                "Rollback Generator",
+                "Bus 01",
+                template[0],
+                10.0,
+                open_digsilent=False,
+            ),
+            "rolled_back=True",
+        )
+        self.assertEqual(failing_grid["ElmSym"], [failing_template])
+        self.assertEqual(buses["Bus 01"]["StaCubic"], [])
+        self.assertIsNotNone(template_object)
 
     def test_add_line_validation_and_rollback(self):
-        grid = FakeGrid("Grid")
-        bus_1 = grid.CreateObject("ElmTerm", "Bus 01")
-        bus_2 = grid.CreateObject("ElmTerm", "Bus 02")
-        line_type = FakeLineType("Test Line Type")
-        template = grid.CreateObject("ElmLne", "Line 01 - 02")
-        template.SetAttribute("typ_id", line_type)
-
-        self.use_application(FakeApplication(
-            [grid],
-            {"Line 01 - 02.ElmLne": [template]},
-        ))
-
+        template = ("Line 01 - 02.ElmLne", "ElmLne", "TypLne")
+        grid, buses, _, line_type = self.network(
+            ("Bus 01", "Bus 02"), template
+        )
         ok, message = agent_module.DIgSILENTAgent.add_line(
             "MCP Test Line",
             "Bus 01",
             "Bus 02",
-            "Line 01 - 02.ElmLne",
+            template[0],
             10.0,
             out_of_service=True,
             open_digsilent=False,
         )
-
         self.assertTrue(ok, message)
-        self.assertEqual(len(grid.lines), 2)
-        self.assertEqual(len(bus_1.cubicles), 1)
-        self.assertEqual(len(bus_2.cubicles), 1)
-
-        created = grid.lines[1]
+        created = grid["ElmLne"][1]
         self.assertIs(created.GetAttribute("typ_id"), line_type)
         self.assertIs(
-            created.GetAttribute("bus1"),
-            bus_1.cubicles[0],
+            created.GetAttribute("bus1"), buses["Bus 01"]["StaCubic"][0]
         )
         self.assertIs(
-            created.GetAttribute("bus2"),
-            bus_2.cubicles[0],
+            created.GetAttribute("bus2"), buses["Bus 02"]["StaCubic"][0]
         )
-        self.assertEqual(created.GetAttribute("dline"), 10.0)
-        self.assertEqual(created.GetAttribute("outserv"), 1)
+        self.assert_attributes(created, {"dline": 10.0, "outserv": 1})
 
-        ok, message = agent_module.DIgSILENTAgent.add_line(
+        duplicate = agent_module.DIgSILENTAgent.add_line(
             "MCP Test Line",
             "Bus 01",
             "Bus 02",
-            "Line 01 - 02.ElmLne",
+            template[0],
             10.0,
             open_digsilent=False,
         )
-        self.assertFalse(ok)
-        self.assertIn("already exists", message)
-        self.assertEqual(len(grid.lines), 2)
-
-        ok, message = agent_module.DIgSILENTAgent.add_line(
-            "Same Bus Line",
-            "Bus 01",
-            "Bus 01",
-            "Line 01 - 02.ElmLne",
-            10.0,
-            open_digsilent=False,
+        self.assert_failed(duplicate, "already exists")
+        self.assert_failed(
+            agent_module.DIgSILENTAgent.add_line(
+                "Same Bus Line",
+                "Bus 01",
+                "Bus 01",
+                template[0],
+                10.0,
+                open_digsilent=False,
+            ),
+            "must be different",
         )
-        self.assertFalse(ok)
-        self.assertIn("must be different", message)
-
-        ok, message = agent_module.DIgSILENTAgent.add_line(
-            "Missing Template Line",
-            "Bus 01",
-            "Bus 02",
-            "Unknown.ElmLne",
-            10.0,
-            open_digsilent=False,
-        )
-        self.assertFalse(ok)
-        self.assertIn("Template line not found", message)
-
-        failing_grid = FakeGrid(
-            "Grid",
-            reject_line_length=True,
-        )
-        failing_bus_1 = failing_grid.CreateObject(
-            "ElmTerm",
-            "Bus 01",
-        )
-        failing_bus_2 = failing_grid.CreateObject(
-            "ElmTerm",
-            "Bus 02",
-        )
-        failing_template = failing_grid.CreateObject(
-            "ElmLne",
-            "Line 01 - 02",
-        )
-        failing_template.SetAttribute("typ_id", line_type)
-
-        self.use_application(FakeApplication(
-            [failing_grid],
-            {"Line 01 - 02.ElmLne": [failing_template]},
-        ))
-
-        ok, message = agent_module.DIgSILENTAgent.add_line(
-            "Rollback Line",
-            "Bus 01",
-            "Bus 02",
-            "Line 01 - 02.ElmLne",
-            10.0,
-            open_digsilent=False,
+        self.assert_failed(
+            agent_module.DIgSILENTAgent.add_line(
+                "Missing Template Line",
+                "Bus 01",
+                "Bus 02",
+                "Unknown.ElmLne",
+                10.0,
+                open_digsilent=False,
+            ),
+            "Template line not found",
         )
 
-        self.assertFalse(ok)
-        self.assertIn("rolled_back=True", message)
-        self.assertEqual(
-            failing_grid.lines,
-            [failing_template],
+        failing_grid, buses, failing_template, _ = self.network(
+            ("Bus 01", "Bus 02"), template
         )
-        self.assertEqual(failing_bus_1.cubicles, [])
-        self.assertEqual(failing_bus_2.cubicles, [])
+        failing_grid.reject_attribute = "dline"
+        self.assert_failed(
+            agent_module.DIgSILENTAgent.add_line(
+                "Rollback Line",
+                "Bus 01",
+                "Bus 02",
+                template[0],
+                10.0,
+                open_digsilent=False,
+            ),
+            "rolled_back=True",
+        )
+        self.assertEqual(failing_grid["ElmLne"], [failing_template])
+        self.assertEqual(buses["Bus 01"]["StaCubic"], [])
+        self.assertEqual(buses["Bus 02"]["StaCubic"], [])
 
     def test_add_transformer_validation_and_rollback(self):
-        grid = FakeGrid("Grid")
-        high_voltage_bus = grid.CreateObject(
-            "ElmTerm",
-            "Bus 02",
+        template = ("Trf 02 - 30.ElmTr2", "ElmTr2", "TypTr2")
+        grid, buses, _, transformer_type = self.network(
+            ("Bus 02", "Bus 30"), template
         )
-        low_voltage_bus = grid.CreateObject(
-            "ElmTerm",
-            "Bus 30",
-        )
-        transformer_type = FakeTransformerType(
-            "Test Transformer Type"
-        )
-        template = grid.CreateObject(
-            "ElmTr2",
-            "Trf 02 - 30",
-        )
-        template.SetAttribute("typ_id", transformer_type)
-
-        self.use_application(FakeApplication(
-            [grid],
-            {"Trf 02 - 30.ElmTr2": [template]},
-        ))
-
         ok, message = agent_module.DIgSILENTAgent.add_transformer(
             "MCP Test Transformer",
             "Bus 02",
             "Bus 30",
-            "Trf 02 - 30.ElmTr2",
+            template[0],
             out_of_service=True,
             open_digsilent=False,
         )
-
         self.assertTrue(ok, message)
-        self.assertEqual(len(grid.transformers), 2)
-        self.assertEqual(len(high_voltage_bus.cubicles), 1)
-        self.assertEqual(len(low_voltage_bus.cubicles), 1)
-
-        created = grid.transformers[1]
+        created = grid["ElmTr2"][1]
+        self.assertIs(created.GetAttribute("typ_id"), transformer_type)
         self.assertIs(
-            created.GetAttribute("typ_id"),
-            transformer_type,
+            created.GetAttribute("bushv"), buses["Bus 02"]["StaCubic"][0]
         )
         self.assertIs(
-            created.GetAttribute("bushv"),
-            high_voltage_bus.cubicles[0],
-        )
-        self.assertIs(
-            created.GetAttribute("buslv"),
-            low_voltage_bus.cubicles[0],
+            created.GetAttribute("buslv"), buses["Bus 30"]["StaCubic"][0]
         )
         self.assertEqual(created.GetAttribute("outserv"), 1)
 
-        ok, message = agent_module.DIgSILENTAgent.add_transformer(
-            "MCP Test Transformer",
-            "Bus 02",
-            "Bus 30",
-            "Trf 02 - 30.ElmTr2",
-            open_digsilent=False,
+        self.assert_failed(
+            agent_module.DIgSILENTAgent.add_transformer(
+                "MCP Test Transformer",
+                "Bus 02",
+                "Bus 30",
+                template[0],
+                open_digsilent=False,
+            ),
+            "already exists",
         )
-        self.assertFalse(ok)
-        self.assertIn("already exists", message)
-        self.assertEqual(len(grid.transformers), 2)
-
-        ok, message = agent_module.DIgSILENTAgent.add_transformer(
-            "Same Bus Transformer",
-            "Bus 02",
-            "Bus 02",
-            "Trf 02 - 30.ElmTr2",
-            open_digsilent=False,
+        self.assert_failed(
+            agent_module.DIgSILENTAgent.add_transformer(
+                "Same Bus Transformer",
+                "Bus 02",
+                "Bus 02",
+                template[0],
+                open_digsilent=False,
+            ),
+            "must be different",
         )
-        self.assertFalse(ok)
-        self.assertIn("must be different", message)
-
-        ok, message = agent_module.DIgSILENTAgent.add_transformer(
-            "Missing Template Transformer",
-            "Bus 02",
-            "Bus 30",
-            "Unknown.ElmTr2",
-            open_digsilent=False,
-        )
-        self.assertFalse(ok)
-        self.assertIn("Template transformer not found", message)
-
-        failing_grid = FakeGrid("Grid")
-        failing_high_voltage_bus = failing_grid.CreateObject(
-            "ElmTerm",
-            "Bus 02",
-        )
-        failing_low_voltage_bus = failing_grid.CreateObject(
-            "ElmTerm",
-            "Bus 30",
-        )
-        failing_template = failing_grid.CreateObject(
-            "ElmTr2",
-            "Trf 02 - 30",
-        )
-        failing_template.SetAttribute(
-            "typ_id",
-            transformer_type,
-        )
-        failing_grid.reject_transformer_type = True
-
-        self.use_application(FakeApplication(
-            [failing_grid],
-            {"Trf 02 - 30.ElmTr2": [failing_template]},
-        ))
-
-        ok, message = agent_module.DIgSILENTAgent.add_transformer(
-            "Rollback Transformer",
-            "Bus 02",
-            "Bus 30",
-            "Trf 02 - 30.ElmTr2",
-            open_digsilent=False,
+        self.assert_failed(
+            agent_module.DIgSILENTAgent.add_transformer(
+                "Missing Template Transformer",
+                "Bus 02",
+                "Bus 30",
+                "Unknown.ElmTr2",
+                open_digsilent=False,
+            ),
+            "Template transformer not found",
         )
 
-        self.assertFalse(ok)
-        self.assertIn("rolled_back=True", message)
-        self.assertEqual(
-            failing_grid.transformers,
-            [failing_template],
+        failing_grid, buses, failing_template, _ = self.network(
+            ("Bus 02", "Bus 30"), template
         )
-        self.assertEqual(
-            failing_high_voltage_bus.cubicles,
-            [],
+        failing_grid.reject_attribute = "typ_id"
+        self.assert_failed(
+            agent_module.DIgSILENTAgent.add_transformer(
+                "Rollback Transformer",
+                "Bus 02",
+                "Bus 30",
+                template[0],
+                open_digsilent=False,
+            ),
+            "rolled_back=True",
         )
-        self.assertEqual(
-            failing_low_voltage_bus.cubicles,
-            [],
-        )
+        self.assertEqual(failing_grid["ElmTr2"], [failing_template])
+        self.assertEqual(buses["Bus 02"]["StaCubic"], [])
+        self.assertEqual(buses["Bus 30"]["StaCubic"], [])
+
 
 if __name__ == "__main__":
     unittest.main()
