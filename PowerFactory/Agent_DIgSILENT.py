@@ -6,6 +6,7 @@
 Author
 ------
   Andrea Pomarico
+  Aswin Krishna Poyil
   
 """
 
@@ -936,6 +937,29 @@ class DIgSILENTAgent:
             f"Available grids: {available}"
         )
 
+    @staticmethod
+    def _select_bus(grid, bus_name: str):
+        requested = str(bus_name or "").strip()
+        buses = grid.GetContents("*.ElmTerm", 1) or []
+
+        matches = [
+            bus
+            for bus in buses
+            if str(bus.GetAttribute("loc_name")).casefold()
+            == requested.casefold()
+        ]
+
+        if not matches:
+            raise RuntimeError(
+                f"Bus not found in the selected grid: {requested}"
+            )
+        if len(matches) > 1:
+            raise RuntimeError(
+                f"Multiple buses matched: {requested}"
+            )
+
+        return matches[0]
+
     @classmethod
     def _get_application(cls, open_digsilent: bool = True):
         global pf
@@ -1018,21 +1042,7 @@ class DIgSILENTAgent:
                 f"{element_name}"
             )
 
-        buses = grid.GetContents("*.ElmTerm", 1) or []
-        matching_buses = [
-            bus
-            for bus in buses
-            if str(bus.GetAttribute("loc_name")).casefold()
-            == bus_name.casefold()
-        ]
-        if not matching_buses:
-            raise RuntimeError(
-                f"Bus not found in the selected grid: {bus_name}"
-            )
-        if len(matching_buses) > 1:
-            raise RuntimeError(f"Multiple buses matched: {bus_name}")
-
-        bus = matching_buses[0]
+        bus = cls._select_bus(grid, bus_name)
         cubicle_name = f"{element_name} Cubicle"
 
         existing_cubicles = (
@@ -1094,6 +1104,172 @@ class DIgSILENTAgent:
                     class_name,
                     element_name,
                     cubicle_name,
+                )
+                message += f" | rolled_back={rolled_back}"
+
+            raise RuntimeError(message) from exc
+
+    @staticmethod
+    def _rollback_two_terminal_element(
+        grid,
+        buses,
+        element,
+        cubicles,
+        class_name: str,
+        element_name: str,
+        cubicle_names,
+    ) -> bool:
+        for created_object in (element, *cubicles):
+            if created_object is not None:
+                try:
+                    created_object.Delete()
+                except Exception:
+                    pass
+
+        try:
+            remaining_elements = (
+                grid.GetContents(f"*.{class_name}", 1) or []
+            )
+            element_exists = any(
+                str(obj.GetAttribute("loc_name")).casefold()
+                == element_name.casefold()
+                for obj in remaining_elements
+            )
+
+            cubicle_exists = False
+            for bus, cubicle_name in zip(buses, cubicle_names):
+                remaining_cubicles = (
+                    bus.GetContents("*.StaCubic", 1) or []
+                )
+                if any(
+                    str(obj.GetAttribute("loc_name")).casefold()
+                    == cubicle_name.casefold()
+                    for obj in remaining_cubicles
+                ):
+                    cubicle_exists = True
+
+            return not element_exists and not cubicle_exists
+        except Exception:
+            return False
+
+    @classmethod
+    def _create_two_terminal_element(
+        cls,
+        app,
+        class_name: str,
+        element_label: str,
+        element_name: str,
+        bus1_name: str,
+        bus2_name: str,
+        grid_name: str,
+    ):
+        grid = cls._select_grid(app, grid_name)
+
+        existing_elements = (
+            grid.GetContents(f"*.{class_name}", 1) or []
+        )
+        if any(
+            str(obj.GetAttribute("loc_name")).casefold()
+            == element_name.casefold()
+            for obj in existing_elements
+        ):
+            raise RuntimeError(
+                f"{element_label} already exists in the selected grid: "
+                f"{element_name}"
+            )
+
+        buses = (
+            cls._select_bus(grid, bus1_name),
+            cls._select_bus(grid, bus2_name),
+        )
+        if buses[0].GetFullName() == buses[1].GetFullName():
+            raise RuntimeError(
+                "The two terminals must use different buses"
+            )
+
+        cubicle_names = (
+            f"{element_name} Cubicle 1",
+            f"{element_name} Cubicle 2",
+        )
+
+        for bus, cubicle_name in zip(buses, cubicle_names):
+            existing_cubicles = (
+                bus.GetContents("*.StaCubic", 1) or []
+            )
+            if any(
+                str(obj.GetAttribute("loc_name")).casefold()
+                == cubicle_name.casefold()
+                for obj in existing_cubicles
+            ):
+                raise RuntimeError(
+                    f"Cubicle already exists on bus: {cubicle_name}"
+                )
+
+        cubicles = [None, None]
+        element = None
+
+        try:
+            for index, (bus, cubicle_name) in enumerate(
+                zip(buses, cubicle_names)
+            ):
+                cubicles[index] = bus.CreateObject(
+                    "StaCubic",
+                    cubicle_name,
+                )
+                if cubicles[index] is None:
+                    raise RuntimeError(
+                        f"Could not create cubicle on bus: "
+                        f"{bus.GetAttribute('loc_name')}"
+                    )
+
+            element = grid.CreateObject(class_name, element_name)
+            if element is None:
+                raise RuntimeError(
+                    f"Could not create {element_label.lower()}: "
+                    f"{element_name}"
+                )
+
+            element.SetAttribute("bus1", cubicles[0])
+            element.SetAttribute("bus2", cubicles[1])
+
+            for attribute, cubicle in zip(
+                ("bus1", "bus2"),
+                cubicles,
+            ):
+                actual_cubicle = element.GetAttribute(attribute)
+                if (
+                    actual_cubicle is None
+                    or actual_cubicle.GetFullName()
+                    != cubicle.GetFullName()
+                ):
+                    raise RuntimeError(
+                        "PowerFactory did not retain both bus connections"
+                    )
+
+            return (
+                grid,
+                buses,
+                element,
+                tuple(cubicles),
+                cubicle_names,
+            )
+
+        except Exception as exc:
+            created_any = (
+                element is not None
+                or any(cubicle is not None for cubicle in cubicles)
+            )
+            message = str(exc)
+
+            if created_any:
+                rolled_back = cls._rollback_two_terminal_element(
+                    grid,
+                    buses,
+                    element,
+                    tuple(cubicles),
+                    class_name,
+                    element_name,
+                    cubicle_names,
                 )
                 message += f" | rolled_back={rolled_back}"
 
@@ -1537,6 +1713,176 @@ class DIgSILENTAgent:
                 message += f" | rolled_back={rolled_back}"
 
             log.error(f"Generator creation failed: {message}")
+            return False, message
+
+    @classmethod
+    def add_line(
+        cls,
+        line_name: str,
+        bus1_name: str,
+        bus2_name: str,
+        template_line: str,
+        length_km: float,
+        grid_name: str = "",
+        out_of_service: bool = False,
+        open_digsilent: bool = True,
+    ) -> tuple[bool, str]:
+        """Create an ElmLne using the type of an existing line."""
+        import math
+
+        name = str(line_name or "").strip()
+        requested_bus1 = str(bus1_name or "").strip()
+        requested_bus2 = str(bus2_name or "").strip()
+        template_query = str(template_line or "").strip()
+
+        if not name:
+            return False, "line_name must not be empty"
+        if not requested_bus1 or not requested_bus2:
+            return False, "bus1_name and bus2_name must not be empty"
+        if requested_bus1.casefold() == requested_bus2.casefold():
+            return False, "bus1_name and bus2_name must be different"
+        if not template_query:
+            return False, "template_line must not be empty"
+
+        try:
+            length = float(length_km)
+        except (TypeError, ValueError):
+            return False, "length_km must be a number"
+
+        if not math.isfinite(length) or length <= 0:
+            return False, "length_km must be a finite positive number"
+
+        grid = None
+        buses = ()
+        created_line = None
+        cubicles = ()
+        cubicle_names = (
+            f"{name} Cubicle 1",
+            f"{name} Cubicle 2",
+        )
+
+        try:
+            app = cls._get_application(open_digsilent)
+
+            templates = (
+                app.GetCalcRelevantObjects(template_query) or []
+            )
+            if not templates:
+                raise RuntimeError(
+                    f"Template line not found: {template_query}"
+                )
+            if len(templates) > 1:
+                raise RuntimeError(
+                    f"Multiple template lines matched: {template_query}"
+                )
+
+            template = templates[0]
+            if template.GetClassName() != "ElmLne":
+                raise RuntimeError(
+                    "template_line must reference an ElmLne"
+                )
+
+            template_type = template.GetAttribute("typ_id")
+            if template_type is None:
+                raise RuntimeError(
+                    "Template line has no line type"
+                )
+
+            (
+                grid,
+                buses,
+                created_line,
+                cubicles,
+                cubicle_names,
+            ) = cls._create_two_terminal_element(
+                app,
+                "ElmLne",
+                "Line",
+                name,
+                requested_bus1,
+                requested_bus2,
+                grid_name,
+            )
+
+            created_line.SetAttribute("typ_id", template_type)
+            created_line.SetAttribute("dline", length)
+            created_line.SetAttribute(
+                "outserv",
+                int(bool(out_of_service)),
+            )
+
+            actual_name = str(
+                created_line.GetAttribute("loc_name")
+            )
+            actual_length = float(
+                created_line.GetAttribute("dline")
+            )
+            actual_outserv = int(
+                created_line.GetAttribute("outserv")
+            )
+            actual_type = created_line.GetAttribute("typ_id")
+
+            if actual_name != name:
+                raise RuntimeError(
+                    "PowerFactory did not retain the line name"
+                )
+            if not math.isclose(
+                actual_length,
+                length,
+                rel_tol=1e-9,
+                abs_tol=1e-9,
+            ):
+                raise RuntimeError(
+                    "PowerFactory did not retain the line length"
+                )
+            if actual_outserv != int(bool(out_of_service)):
+                raise RuntimeError(
+                    "PowerFactory did not retain the service state"
+                )
+            if (
+                actual_type is None
+                or actual_type.GetFullName()
+                != template_type.GetFullName()
+            ):
+                raise RuntimeError(
+                    "PowerFactory did not retain the line type"
+                )
+
+            full_name = created_line.GetFullName()
+            log.ok(
+                f"Created line '{name}' between "
+                f"'{requested_bus1}' and '{requested_bus2}'"
+            )
+            return (
+                True,
+                f"Created line: {full_name} | "
+                f"bus1={requested_bus1} | "
+                f"bus2={requested_bus2} | "
+                f"template={template_query} | "
+                f"length_km={actual_length} | "
+                f"out_of_service={bool(actual_outserv)}",
+            )
+
+        except Exception as exc:
+            created_any = (
+                created_line is not None
+                or any(cubicle is not None for cubicle in cubicles)
+            )
+            message = str(exc)
+
+            if created_any:
+                rolled_back = cls._rollback_two_terminal_element(
+                    grid,
+                    buses,
+                    created_line,
+                    cubicles,
+                    "ElmLne",
+                    name,
+                    cubicle_names,
+                )
+                message += f" | rolled_back={rolled_back}"
+
+            log.error(f"Line creation failed: {message}")
             return False, message
 
     # ──────────────────────────────────────────────────────────────

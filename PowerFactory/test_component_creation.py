@@ -29,6 +29,14 @@ class FakeCubicle:
         self.parent.cubicles.remove(self)
 
 
+class FakeLineType:
+    def __init__(self, name):
+        self.name = name
+
+    def GetFullName(self):
+        return rf"\user\Library\{self.name}.TypLne"
+
+
 class FakeBus:
     def __init__(self, parent, name):
         self.parent = parent
@@ -128,6 +136,38 @@ class FakeGenerator:
         self.parent.generators.remove(self)
 
 
+class FakeLine:
+    def __init__(self, parent, name):
+        self.parent = parent
+        self.attributes = {
+            "loc_name": name,
+            "typ_id": None,
+            "bus1": None,
+            "bus2": None,
+            "dline": 0.0,
+            "outserv": 0,
+        }
+
+    def GetAttribute(self, name):
+        return self.attributes[name]
+
+    def SetAttribute(self, name, value):
+        if name == "dline" and self.parent.reject_line_length:
+            return
+        self.attributes[name] = value
+
+    def GetClassName(self):
+        return "ElmLne"
+
+    def GetFullName(self):
+        return (
+            rf"\user\test.IntPrj\Grid\{self.attributes['loc_name']}.ElmLne"
+        )
+
+    def Delete(self):
+        self.parent.lines.remove(self)
+
+
 class FakeGrid:
     def __init__(
         self,
@@ -135,14 +175,17 @@ class FakeGrid:
         reject_voltage=False,
         reject_load_power=False,
         reject_generator_power=False,
+        reject_line_length=False,
     ):
         self.name = name
         self.reject_voltage = reject_voltage
         self.reject_load_power = reject_load_power
         self.reject_generator_power = reject_generator_power
+        self.reject_line_length = reject_line_length
         self.terminals = []
         self.loads = []
         self.generators = []
+        self.lines = []
 
     def GetAttribute(self, name):
         if name == "loc_name":
@@ -156,6 +199,8 @@ class FakeGrid:
             return list(self.loads)
         if query == "*.ElmSym":
             return list(self.generators)
+        if query == "*.ElmLne":
+            return list(self.lines)
         return []
 
     def CreateObject(self, class_name, name):
@@ -163,14 +208,22 @@ class FakeGrid:
             bus = FakeBus(self, name)
             self.terminals.append(bus)
             return bus
+
         if class_name == "ElmLod":
             load = FakeLoad(self, name)
             self.loads.append(load)
             return load
+
         if class_name == "ElmSym":
             generator = FakeGenerator(self, name)
             self.generators.append(generator)
             return generator
+
+        if class_name == "ElmLne":
+            line = FakeLine(self, name)
+            self.lines.append(line)
+            return line
+
         return None
 
 
@@ -474,6 +527,121 @@ class ComponentCreationTest(unittest.TestCase):
         )
         self.assertEqual(failing_bus.cubicles, [])
 
+    def test_add_line_validation_and_rollback(self):
+        grid = FakeGrid("Grid")
+        bus_1 = grid.CreateObject("ElmTerm", "Bus 01")
+        bus_2 = grid.CreateObject("ElmTerm", "Bus 02")
+        line_type = FakeLineType("Test Line Type")
+        template = grid.CreateObject("ElmLne", "Line 01 - 02")
+        template.SetAttribute("typ_id", line_type)
+
+        self.use_application(FakeApplication(
+            [grid],
+            {"Line 01 - 02.ElmLne": [template]},
+        ))
+
+        ok, message = agent_module.DIgSILENTAgent.add_line(
+            "MCP Test Line",
+            "Bus 01",
+            "Bus 02",
+            "Line 01 - 02.ElmLne",
+            10.0,
+            out_of_service=True,
+            open_digsilent=False,
+        )
+
+        self.assertTrue(ok, message)
+        self.assertEqual(len(grid.lines), 2)
+        self.assertEqual(len(bus_1.cubicles), 1)
+        self.assertEqual(len(bus_2.cubicles), 1)
+
+        created = grid.lines[1]
+        self.assertIs(created.GetAttribute("typ_id"), line_type)
+        self.assertIs(
+            created.GetAttribute("bus1"),
+            bus_1.cubicles[0],
+        )
+        self.assertIs(
+            created.GetAttribute("bus2"),
+            bus_2.cubicles[0],
+        )
+        self.assertEqual(created.GetAttribute("dline"), 10.0)
+        self.assertEqual(created.GetAttribute("outserv"), 1)
+
+        ok, message = agent_module.DIgSILENTAgent.add_line(
+            "MCP Test Line",
+            "Bus 01",
+            "Bus 02",
+            "Line 01 - 02.ElmLne",
+            10.0,
+            open_digsilent=False,
+        )
+        self.assertFalse(ok)
+        self.assertIn("already exists", message)
+        self.assertEqual(len(grid.lines), 2)
+
+        ok, message = agent_module.DIgSILENTAgent.add_line(
+            "Same Bus Line",
+            "Bus 01",
+            "Bus 01",
+            "Line 01 - 02.ElmLne",
+            10.0,
+            open_digsilent=False,
+        )
+        self.assertFalse(ok)
+        self.assertIn("must be different", message)
+
+        ok, message = agent_module.DIgSILENTAgent.add_line(
+            "Missing Template Line",
+            "Bus 01",
+            "Bus 02",
+            "Unknown.ElmLne",
+            10.0,
+            open_digsilent=False,
+        )
+        self.assertFalse(ok)
+        self.assertIn("Template line not found", message)
+
+        failing_grid = FakeGrid(
+            "Grid",
+            reject_line_length=True,
+        )
+        failing_bus_1 = failing_grid.CreateObject(
+            "ElmTerm",
+            "Bus 01",
+        )
+        failing_bus_2 = failing_grid.CreateObject(
+            "ElmTerm",
+            "Bus 02",
+        )
+        failing_template = failing_grid.CreateObject(
+            "ElmLne",
+            "Line 01 - 02",
+        )
+        failing_template.SetAttribute("typ_id", line_type)
+
+        self.use_application(FakeApplication(
+            [failing_grid],
+            {"Line 01 - 02.ElmLne": [failing_template]},
+        ))
+
+        ok, message = agent_module.DIgSILENTAgent.add_line(
+            "Rollback Line",
+            "Bus 01",
+            "Bus 02",
+            "Line 01 - 02.ElmLne",
+            10.0,
+            open_digsilent=False,
+        )
+
+        self.assertFalse(ok)
+        self.assertIn("rolled_back=True", message)
+        self.assertEqual(
+            failing_grid.lines,
+            [failing_template],
+        )
+        self.assertEqual(failing_bus_1.cubicles, [])
+        self.assertEqual(failing_bus_2.cubicles, [])
 
 if __name__ == "__main__":
     unittest.main()

@@ -6,6 +6,7 @@ Exposes DIgSILENT PowerFactory simulation as FastMCP tools.
 Author
 ------
   Andrea Pomarico
+  Aswin Krishna Poyil
 
 Tools
 -----
@@ -17,6 +18,7 @@ Tools
   add_bus           Create and verify a bus in an active grid.
   add_load          Create and connect a load to an existing bus.
   add_generator     Create a typed synchronous generator on an existing bus.
+  add_line          Create a typed line between two existing buses.
   run_loadflow      Run a load flow calculation (ComLdf) on the active study case.
   run_short_circuit Run a short-circuit calculation (ComShc) on the active study case.
   run_simulation    Run the full pipeline from simulation_config.json.
@@ -25,8 +27,8 @@ Tools
 
 Usage
 -----
-    python MCP_PowerFactory.py                  # stdio transport (default)
-    python MCP_PowerFactory.py --transport sse   # SSE transport on port 8000
+    python MCP_PowerFactory.py                      # stdio transport (default)
+    python MCP_PowerFactory.py --transport sse      # SSE transport on port 8000
 """
 
 import sys
@@ -382,6 +384,43 @@ def add_generator(
         template_generator,
         active_power_mw,
         reactive_power_mvar,
+        grid_name,
+        out_of_service,
+        open_digsilent,
+    )
+
+    return json.dumps({
+        "success": ok,
+        "message": message,
+    })
+
+
+@mcp.tool()
+def add_line(
+    line_name: str,
+    bus1_name: str,
+    bus2_name: str,
+    template_line: str,
+    length_km: float,
+    grid_name: str = "",
+    out_of_service: bool = False,
+    open_digsilent: bool = True,
+) -> str:
+    """
+    Create a line between two existing buses using an existing line type.
+
+    The line and both cubicles are removed automatically if initialization
+    or verification fails.
+    """
+    _, DIgSILENTAgent = _load_modules()
+
+    ok, message = _pf(
+        DIgSILENTAgent.add_line,
+        line_name,
+        bus1_name,
+        bus2_name,
+        template_line,
+        length_km,
         grid_name,
         out_of_service,
         open_digsilent,
