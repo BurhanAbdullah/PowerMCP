@@ -954,6 +954,151 @@ class DIgSILENTAgent:
         cls._apply_show_preference(app, open_digsilent)
         return app
 
+    @staticmethod
+    def _rollback_connected_element(
+        grid,
+        bus,
+        element,
+        cubicle,
+        class_name: str,
+        element_name: str,
+        cubicle_name: str,
+    ) -> bool:
+        for created_object in (element, cubicle):
+            if created_object is not None:
+                try:
+                    created_object.Delete()
+                except Exception:
+                    pass
+
+        try:
+            remaining_elements = (
+                grid.GetContents(f"*.{class_name}", 1) or []
+            )
+            remaining_cubicles = (
+                bus.GetContents("*.StaCubic", 1) or []
+            )
+
+            element_exists = any(
+                str(obj.GetAttribute("loc_name")).casefold()
+                == element_name.casefold()
+                for obj in remaining_elements
+            )
+            cubicle_exists = any(
+                str(obj.GetAttribute("loc_name")).casefold()
+                == cubicle_name.casefold()
+                for obj in remaining_cubicles
+            )
+            return not element_exists and not cubicle_exists
+        except Exception:
+            return False
+
+    @classmethod
+    def _create_connected_element(
+        cls,
+        app,
+        class_name: str,
+        element_label: str,
+        element_name: str,
+        bus_name: str,
+        grid_name: str,
+    ):
+        grid = cls._select_grid(app, grid_name)
+
+        existing_elements = (
+            grid.GetContents(f"*.{class_name}", 1) or []
+        )
+        if any(
+            str(obj.GetAttribute("loc_name")).casefold()
+            == element_name.casefold()
+            for obj in existing_elements
+        ):
+            raise RuntimeError(
+                f"{element_label} already exists in the selected grid: "
+                f"{element_name}"
+            )
+
+        buses = grid.GetContents("*.ElmTerm", 1) or []
+        matching_buses = [
+            bus
+            for bus in buses
+            if str(bus.GetAttribute("loc_name")).casefold()
+            == bus_name.casefold()
+        ]
+        if not matching_buses:
+            raise RuntimeError(
+                f"Bus not found in the selected grid: {bus_name}"
+            )
+        if len(matching_buses) > 1:
+            raise RuntimeError(f"Multiple buses matched: {bus_name}")
+
+        bus = matching_buses[0]
+        cubicle_name = f"{element_name} Cubicle"
+
+        existing_cubicles = (
+            bus.GetContents("*.StaCubic", 1) or []
+        )
+        if any(
+            str(obj.GetAttribute("loc_name")).casefold()
+            == cubicle_name.casefold()
+            for obj in existing_cubicles
+        ):
+            raise RuntimeError(
+                f"Cubicle already exists on bus: {cubicle_name}"
+            )
+
+        cubicle = None
+        element = None
+
+        try:
+            cubicle = bus.CreateObject(
+                "StaCubic",
+                cubicle_name,
+            )
+            if cubicle is None:
+                raise RuntimeError(
+                    f"Could not create cubicle on bus: {bus_name}"
+                )
+
+            element = grid.CreateObject(class_name, element_name)
+            if element is None:
+                raise RuntimeError(
+                    f"Could not create {element_label.lower()}: "
+                    f"{element_name}"
+                )
+
+            element.SetAttribute("bus1", cubicle)
+            actual_cubicle = element.GetAttribute("bus1")
+
+            if (
+                actual_cubicle is None
+                or actual_cubicle.GetFullName()
+                != cubicle.GetFullName()
+            ):
+                raise RuntimeError(
+                    "PowerFactory did not retain the bus connection"
+                )
+
+            return grid, bus, element, cubicle, cubicle_name
+
+        except Exception as exc:
+            created_any = element is not None or cubicle is not None
+            message = str(exc)
+
+            if created_any:
+                rolled_back = cls._rollback_connected_element(
+                    grid,
+                    bus,
+                    element,
+                    cubicle,
+                    class_name,
+                    element_name,
+                    cubicle_name,
+                )
+                message += f" | rolled_back={rolled_back}"
+
+            raise RuntimeError(message) from exc
+
     @classmethod
     def add_bus(
         cls,
@@ -1112,67 +1257,27 @@ class DIgSILENTAgent:
 
         grid = None
         bus = None
-        created_cubicle = None
         created_load = None
+        created_cubicle = None
+        cubicle_name = f"{name} Cubicle"
 
         try:
             app = cls._get_application(open_digsilent)
-            grid = cls._select_grid(app, grid_name)
-
-            existing_loads = grid.GetContents("*.ElmLod", 1) or []
-            if any(
-                str(load.GetAttribute("loc_name")).casefold()
-                == name.casefold()
-                for load in existing_loads
-            ):
-                raise RuntimeError(
-                    f"Load already exists in the selected grid: {name}"
-                )
-
-            buses = grid.GetContents("*.ElmTerm", 1) or []
-            matching_buses = [
-                candidate
-                for candidate in buses
-                if str(candidate.GetAttribute("loc_name")).casefold()
-                == requested_bus.casefold()
-            ]
-
-            if not matching_buses:
-                raise RuntimeError(
-                    f"Bus not found in the selected grid: {requested_bus}"
-                )
-            if len(matching_buses) > 1:
-                raise RuntimeError(
-                    f"Multiple buses matched: {requested_bus}"
-                )
-
-            bus = matching_buses[0]
-            cubicle_name = f"{name} Cubicle"
-
-            existing_cubicles = bus.GetContents("*.StaCubic", 1) or []
-            if any(
-                str(cubicle.GetAttribute("loc_name")).casefold()
-                == cubicle_name.casefold()
-                for cubicle in existing_cubicles
-            ):
-                raise RuntimeError(
-                    f"Cubicle already exists on bus: {cubicle_name}"
-                )
-
-            created_cubicle = bus.CreateObject(
-                "StaCubic",
+            (
+                grid,
+                bus,
+                created_load,
+                created_cubicle,
                 cubicle_name,
+            ) = cls._create_connected_element(
+                app,
+                "ElmLod",
+                "Load",
+                name,
+                requested_bus,
+                grid_name,
             )
-            if created_cubicle is None:
-                raise RuntimeError(
-                    f"Could not create cubicle on bus: {requested_bus}"
-                )
 
-            created_load = grid.CreateObject("ElmLod", name)
-            if created_load is None:
-                raise RuntimeError(f"Could not create load: {name}")
-
-            created_load.SetAttribute("bus1", created_cubicle)
             created_load.SetAttribute("plini", active_power)
             created_load.SetAttribute("qlini", reactive_power)
             created_load.SetAttribute(
@@ -1192,13 +1297,11 @@ class DIgSILENTAgent:
             actual_outserv = int(
                 created_load.GetAttribute("outserv")
             )
-            actual_cubicle = created_load.GetAttribute("bus1")
 
             if actual_name != name:
                 raise RuntimeError(
                     "PowerFactory did not retain the requested load name"
                 )
-
             if not math.isclose(
                 actual_active_power,
                 active_power,
@@ -1208,7 +1311,6 @@ class DIgSILENTAgent:
                 raise RuntimeError(
                     "PowerFactory did not retain the requested active power"
                 )
-
             if not math.isclose(
                 actual_reactive_power,
                 reactive_power,
@@ -1218,19 +1320,9 @@ class DIgSILENTAgent:
                 raise RuntimeError(
                     "PowerFactory did not retain the requested reactive power"
                 )
-
             if actual_outserv != int(bool(out_of_service)):
                 raise RuntimeError(
                     "PowerFactory did not retain the requested service state"
-                )
-
-            if (
-                actual_cubicle is None
-                or actual_cubicle.GetFullName()
-                != created_cubicle.GetFullName()
-            ):
-                raise RuntimeError(
-                    "PowerFactory did not retain the bus connection"
                 )
 
             full_name = created_load.GetFullName()
@@ -1251,31 +1343,18 @@ class DIgSILENTAgent:
                 created_load is not None
                 or created_cubicle is not None
             )
-            rolled_back = created_any
-
-            for created_object in (
-                created_load,
-                created_cubicle,
-            ):
-                if created_object is not None:
-                    try:
-                        created_object.Delete()
-                    except Exception:
-                        rolled_back = False
-
-            if grid is not None:
-                remaining_loads = (
-                    grid.GetContents("*.ElmLod", 1) or []
-                )
-                if any(
-                    str(load.GetAttribute("loc_name")).casefold()
-                    == name.casefold()
-                    for load in remaining_loads
-                ):
-                    rolled_back = False
-
             message = str(exc)
+
             if created_any:
+                rolled_back = cls._rollback_connected_element(
+                    grid,
+                    bus,
+                    created_load,
+                    created_cubicle,
+                    "ElmLod",
+                    name,
+                    cubicle_name,
+                )
                 message += f" | rolled_back={rolled_back}"
 
             log.error(f"Load creation failed: {message}")
@@ -1320,13 +1399,12 @@ class DIgSILENTAgent:
 
         grid = None
         bus = None
-        created_cubicle = None
         created_generator = None
+        created_cubicle = None
         cubicle_name = f"{name} Cubicle"
 
         try:
             app = cls._get_application(open_digsilent)
-            grid = cls._select_grid(app, grid_name)
 
             templates = (
                 app.GetCalcRelevantObjects(template_query) or []
@@ -1337,7 +1415,8 @@ class DIgSILENTAgent:
                 )
             if len(templates) > 1:
                 raise RuntimeError(
-                    f"Multiple template generators matched: {template_query}"
+                    f"Multiple template generators matched: "
+                    f"{template_query}"
                 )
 
             template = templates[0]
@@ -1352,64 +1431,22 @@ class DIgSILENTAgent:
                     "Template generator has no synchronous-machine type"
                 )
 
-            existing_generators = (
-                grid.GetContents("*.ElmSym", 1) or []
-            )
-            if any(
-                str(generator.GetAttribute("loc_name")).casefold()
-                == name.casefold()
-                for generator in existing_generators
-            ):
-                raise RuntimeError(
-                    f"Generator already exists in the selected grid: {name}"
-                )
-
-            buses = grid.GetContents("*.ElmTerm", 1) or []
-            matching_buses = [
-                candidate
-                for candidate in buses
-                if str(candidate.GetAttribute("loc_name")).casefold()
-                == requested_bus.casefold()
-            ]
-            if not matching_buses:
-                raise RuntimeError(
-                    f"Bus not found in the selected grid: {requested_bus}"
-                )
-            if len(matching_buses) > 1:
-                raise RuntimeError(
-                    f"Multiple buses matched: {requested_bus}"
-                )
-
-            bus = matching_buses[0]
-            existing_cubicles = (
-                bus.GetContents("*.StaCubic", 1) or []
-            )
-            if any(
-                str(cubicle.GetAttribute("loc_name")).casefold()
-                == cubicle_name.casefold()
-                for cubicle in existing_cubicles
-            ):
-                raise RuntimeError(
-                    f"Cubicle already exists on bus: {cubicle_name}"
-                )
-
-            created_cubicle = bus.CreateObject(
-                "StaCubic",
+            (
+                grid,
+                bus,
+                created_generator,
+                created_cubicle,
                 cubicle_name,
+            ) = cls._create_connected_element(
+                app,
+                "ElmSym",
+                "Generator",
+                name,
+                requested_bus,
+                grid_name,
             )
-            if created_cubicle is None:
-                raise RuntimeError(
-                    f"Could not create cubicle on bus: {requested_bus}"
-                )
-
-            created_generator = grid.CreateObject("ElmSym", name)
-            if created_generator is None:
-                raise RuntimeError(
-                    f"Could not create generator: {name}"
-                )
 
             created_generator.SetAttribute("typ_id", template_type)
-            created_generator.SetAttribute("bus1", created_cubicle)
             created_generator.SetAttribute("pgini", active_power)
             created_generator.SetAttribute("qgini", reactive_power)
             created_generator.SetAttribute(
@@ -1429,14 +1466,12 @@ class DIgSILENTAgent:
             actual_outserv = int(
                 created_generator.GetAttribute("outserv")
             )
-            actual_cubicle = created_generator.GetAttribute("bus1")
             actual_type = created_generator.GetAttribute("typ_id")
 
             if actual_name != name:
                 raise RuntimeError(
                     "PowerFactory did not retain the generator name"
                 )
-
             if not math.isclose(
                 actual_active_power,
                 active_power,
@@ -1446,7 +1481,6 @@ class DIgSILENTAgent:
                 raise RuntimeError(
                     "PowerFactory did not retain the active power"
                 )
-
             if not math.isclose(
                 actual_reactive_power,
                 reactive_power,
@@ -1456,21 +1490,10 @@ class DIgSILENTAgent:
                 raise RuntimeError(
                     "PowerFactory did not retain the reactive power"
                 )
-
             if actual_outserv != int(bool(out_of_service)):
                 raise RuntimeError(
                     "PowerFactory did not retain the service state"
                 )
-
-            if (
-                actual_cubicle is None
-                or actual_cubicle.GetFullName()
-                != created_cubicle.GetFullName()
-            ):
-                raise RuntimeError(
-                    "PowerFactory did not retain the bus connection"
-                )
-
             if (
                 actual_type is None
                 or actual_type.GetFullName()
@@ -1499,42 +1522,18 @@ class DIgSILENTAgent:
                 created_generator is not None
                 or created_cubicle is not None
             )
-            rolled_back = created_any
-
-            for created_object in (
-                created_generator,
-                created_cubicle,
-            ):
-                if created_object is not None:
-                    try:
-                        created_object.Delete()
-                    except Exception:
-                        rolled_back = False
-
-            if grid is not None:
-                remaining_generators = (
-                    grid.GetContents("*.ElmSym", 1) or []
-                )
-                if any(
-                    str(generator.GetAttribute("loc_name")).casefold()
-                    == name.casefold()
-                    for generator in remaining_generators
-                ):
-                    rolled_back = False
-
-            if bus is not None:
-                remaining_cubicles = (
-                    bus.GetContents("*.StaCubic", 1) or []
-                )
-                if any(
-                    str(cubicle.GetAttribute("loc_name")).casefold()
-                    == cubicle_name.casefold()
-                    for cubicle in remaining_cubicles
-                ):
-                    rolled_back = False
-
             message = str(exc)
+
             if created_any:
+                rolled_back = cls._rollback_connected_element(
+                    grid,
+                    bus,
+                    created_generator,
+                    created_cubicle,
+                    "ElmSym",
+                    name,
+                    cubicle_name,
+                )
                 message += f" | rolled_back={rolled_back}"
 
             log.error(f"Generator creation failed: {message}")
