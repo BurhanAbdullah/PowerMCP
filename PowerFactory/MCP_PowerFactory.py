@@ -110,6 +110,15 @@ def _pf(fn, *args, **kwargs):
     return _pf_executor.submit(fn, *args, **kwargs).result()
 
 
+def _agent_result(method_name: str, *args) -> str:
+    _, DIgSILENTAgent = _load_modules()
+    ok, message = _pf(
+        getattr(DIgSILENTAgent, method_name),
+        *args,
+    )
+    return json.dumps({"success": ok, "message": message})
+
+
 def _load_modules():
     """Deferred import — avoids startup crash when PowerFactory is not running."""
     from Agent_DIgSILENT import SimulationConfig, DIgSILENTAgent
@@ -301,27 +310,15 @@ def add_bus(
     out_of_service: bool = False,
     open_digsilent: bool = True,
 ) -> str:
-    """
-    Create a bus in an active PowerFactory grid.
-
-    The operation rejects duplicate names, verifies all assigned values,
-    and removes the created bus automatically if initialization fails.
-    """
-    _, DIgSILENTAgent = _load_modules()
-
-    ok, message = _pf(
-        DIgSILENTAgent.add_bus,
+    """Create and verify a bus, rolling it back if setup fails."""
+    return _agent_result(
+        "add_bus",
         bus_name,
         nominal_voltage_kv,
         grid_name,
         out_of_service,
         open_digsilent,
     )
-
-    return json.dumps({
-        "success": ok,
-        "message": message,
-    })
 
 
 @mcp.tool()
@@ -334,16 +331,9 @@ def add_load(
     out_of_service: bool = False,
     open_digsilent: bool = True,
 ) -> str:
-    """
-    Create a load and connect it to an existing PowerFactory bus.
-
-    The operation verifies its attributes and connection, and removes the
-    created load and cubicle automatically if initialization fails.
-    """
-    _, DIgSILENTAgent = _load_modules()
-
-    ok, message = _pf(
-        DIgSILENTAgent.add_load,
+    """Create and connect a load, rolling it back if setup fails."""
+    return _agent_result(
+        "add_load",
         load_name,
         bus_name,
         active_power_mw,
@@ -352,11 +342,6 @@ def add_load(
         out_of_service,
         open_digsilent,
     )
-
-    return json.dumps({
-        "success": ok,
-        "message": message,
-    })
 
 
 @mcp.tool()
@@ -370,16 +355,9 @@ def add_generator(
     out_of_service: bool = False,
     open_digsilent: bool = True,
 ) -> str:
-    """
-    Create an ElmSym using the machine type of an existing generator.
-
-    The generator is connected to an existing bus and is removed with its
-    cubicle if initialization or verification fails.
-    """
-    _, DIgSILENTAgent = _load_modules()
-
-    ok, message = _pf(
-        DIgSILENTAgent.add_generator,
+    """Create a typed generator, rolling it back if setup fails."""
+    return _agent_result(
+        "add_generator",
         generator_name,
         bus_name,
         template_generator,
@@ -389,11 +367,6 @@ def add_generator(
         out_of_service,
         open_digsilent,
     )
-
-    return json.dumps({
-        "success": ok,
-        "message": message,
-    })
 
 
 @mcp.tool()
@@ -407,16 +380,9 @@ def add_line(
     out_of_service: bool = False,
     open_digsilent: bool = True,
 ) -> str:
-    """
-    Create a line between two existing buses using an existing line type.
-
-    The line and both cubicles are removed automatically if initialization
-    or verification fails.
-    """
-    _, DIgSILENTAgent = _load_modules()
-
-    ok, message = _pf(
-        DIgSILENTAgent.add_line,
+    """Create a typed line, rolling it back if setup fails."""
+    return _agent_result(
+        "add_line",
         line_name,
         bus1_name,
         bus2_name,
@@ -426,11 +392,6 @@ def add_line(
         out_of_service,
         open_digsilent,
     )
-
-    return json.dumps({
-        "success": ok,
-        "message": message,
-    })
 
 
 @mcp.tool()
@@ -443,16 +404,9 @@ def add_transformer(
     out_of_service: bool = False,
     open_digsilent: bool = True,
 ) -> str:
-    """
-    Create a two-winding transformer using an existing transformer type.
-
-    The transformer and both cubicles are removed automatically if
-    initialization or verification fails.
-    """
-    _, DIgSILENTAgent = _load_modules()
-
-    ok, message = _pf(
-        DIgSILENTAgent.add_transformer,
+    """Create a typed transformer, rolling it back if setup fails."""
+    return _agent_result(
+        "add_transformer",
         transformer_name,
         high_voltage_bus_name,
         low_voltage_bus_name,
@@ -461,11 +415,6 @@ def add_transformer(
         out_of_service,
         open_digsilent,
     )
-
-    return json.dumps({
-        "success": ok,
-        "message": message,
-    })
 
 
 @mcp.tool()
