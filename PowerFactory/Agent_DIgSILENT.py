@@ -979,6 +979,39 @@ class DIgSILENTAgent:
         return app
 
     @staticmethod
+    def _get_template_type(
+        app,
+        template_query: str,
+        class_name: str,
+        label: str,
+        type_label: str,
+    ):
+        templates = (
+            app.GetCalcRelevantObjects(template_query) or []
+        )
+        if not templates:
+            raise RuntimeError(
+                f"Template {label} not found: {template_query}"
+            )
+        if len(templates) > 1:
+            raise RuntimeError(
+                f"Multiple template {label}s matched: {template_query}"
+            )
+
+        template = templates[0]
+        if template.GetClassName() != class_name:
+            raise RuntimeError(
+                f"template_{label} must reference an {class_name}"
+            )
+
+        template_type = template.GetAttribute("typ_id")
+        if template_type is None:
+            raise RuntimeError(
+                f"Template {label} has no {type_label}"
+            )
+        return template_type
+
+    @staticmethod
     def _rollback_connected_element(
         grid,
         buses,
@@ -1459,30 +1492,13 @@ class DIgSILENTAgent:
         try:
             app = cls._get_application(open_digsilent)
 
-            templates = (
-                app.GetCalcRelevantObjects(template_query) or []
+            template_type = cls._get_template_type(
+                app,
+                template_query,
+                "ElmSym",
+                "generator",
+                "synchronous-machine type",
             )
-            if not templates:
-                raise RuntimeError(
-                    f"Template generator not found: {template_query}"
-                )
-            if len(templates) > 1:
-                raise RuntimeError(
-                    f"Multiple template generators matched: "
-                    f"{template_query}"
-                )
-
-            template = templates[0]
-            if template.GetClassName() != "ElmSym":
-                raise RuntimeError(
-                    "template_generator must reference an ElmSym"
-                )
-
-            template_type = template.GetAttribute("typ_id")
-            if template_type is None:
-                raise RuntimeError(
-                    "Template generator has no synchronous-machine type"
-                )
 
             (
                 grid,
@@ -1641,29 +1657,13 @@ class DIgSILENTAgent:
         try:
             app = cls._get_application(open_digsilent)
 
-            templates = (
-                app.GetCalcRelevantObjects(template_query) or []
+            template_type = cls._get_template_type(
+                app,
+                template_query,
+                "ElmLne",
+                "line",
+                "line type",
             )
-            if not templates:
-                raise RuntimeError(
-                    f"Template line not found: {template_query}"
-                )
-            if len(templates) > 1:
-                raise RuntimeError(
-                    f"Multiple template lines matched: {template_query}"
-                )
-
-            template = templates[0]
-            if template.GetClassName() != "ElmLne":
-                raise RuntimeError(
-                    "template_line must reference an ElmLne"
-                )
-
-            template_type = template.GetAttribute("typ_id")
-            if template_type is None:
-                raise RuntimeError(
-                    "Template line has no line type"
-                )
 
             (
                 grid,
@@ -1810,30 +1810,13 @@ class DIgSILENTAgent:
         try:
             app = cls._get_application(open_digsilent)
 
-            templates = (
-                app.GetCalcRelevantObjects(template_query) or []
+            template_type = cls._get_template_type(
+                app,
+                template_query,
+                "ElmTr2",
+                "transformer",
+                "transformer type",
             )
-            if not templates:
-                raise RuntimeError(
-                    f"Template transformer not found: {template_query}"
-                )
-            if len(templates) > 1:
-                raise RuntimeError(
-                    f"Multiple template transformers matched: "
-                    f"{template_query}"
-                )
-
-            template = templates[0]
-            if template.GetClassName() != "ElmTr2":
-                raise RuntimeError(
-                    "template_transformer must reference an ElmTr2"
-                )
-
-            template_type = template.GetAttribute("typ_id")
-            if template_type is None:
-                raise RuntimeError(
-                    "Template transformer has no transformer type"
-                )
 
             (
                 grid,
