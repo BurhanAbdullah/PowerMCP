@@ -15,6 +15,7 @@ Tools
   create_study_case Create/activate a study case by name (no simulation run).
   modify_parameter  Modify an object attribute by object query + variable name.
   add_bus           Create and verify a bus in an active grid.
+  add_load          Create and connect a load to an existing bus.
   run_loadflow      Run a load flow calculation (ComLdf) on the active study case.
   run_short_circuit Run a short-circuit calculation (ComShc) on the active study case.
   run_simulation    Run the full pipeline from simulation_config.json.
@@ -308,6 +309,41 @@ def add_bus(
         DIgSILENTAgent.add_bus,
         bus_name,
         nominal_voltage_kv,
+        grid_name,
+        out_of_service,
+        open_digsilent,
+    )
+
+    return json.dumps({
+        "success": ok,
+        "message": message,
+    })
+
+
+@mcp.tool()
+def add_load(
+    load_name: str,
+    bus_name: str,
+    active_power_mw: float,
+    reactive_power_mvar: float = 0.0,
+    grid_name: str = "",
+    out_of_service: bool = False,
+    open_digsilent: bool = True,
+) -> str:
+    """
+    Create a load and connect it to an existing PowerFactory bus.
+
+    The operation verifies its attributes and connection, and removes the
+    created load and cubicle automatically if initialization fails.
+    """
+    _, DIgSILENTAgent = _load_modules()
+
+    ok, message = _pf(
+        DIgSILENTAgent.add_load,
+        load_name,
+        bus_name,
+        active_power_mw,
+        reactive_power_mvar,
         grid_name,
         out_of_service,
         open_digsilent,
