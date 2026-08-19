@@ -1012,8 +1012,19 @@ class DIgSILENTAgent:
         return template_type
 
     @staticmethod
-    def _set_and_verify_attributes(element, expected, errors):
+    def _set_and_verify_attributes(element, expected, component_label):
         import math
+
+        labels = {
+            "uknom": "nominal voltage",
+            "outserv": "service state",
+            "plini": "active power",
+            "qlini": "reactive power",
+            "pgini": "active power",
+            "qgini": "reactive power",
+            "dline": "line length",
+            "typ_id": f"{component_label.lower()} type",
+        }
 
         for attribute, value in expected.items():
             element.SetAttribute(attribute, value)
@@ -1043,7 +1054,10 @@ class DIgSILENTAgent:
                 matches = False
 
             if not matches:
-                raise RuntimeError(errors[attribute])
+                raise RuntimeError(
+                    "PowerFactory did not retain the "
+                    f"{labels[attribute]}"
+                )
 
         return actual
 
@@ -1274,14 +1288,7 @@ class DIgSILENTAgent:
                     "uknom": voltage,
                     "outserv": int(bool(out_of_service)),
                 },
-                {
-                    "uknom": (
-                        "PowerFactory did not retain the requested nominal voltage"
-                    ),
-                    "outserv": (
-                        "PowerFactory did not retain the requested service state"
-                    ),
-                },
+                "Bus",
             )
 
             actual_name = str(
@@ -1398,17 +1405,7 @@ class DIgSILENTAgent:
                     "qlini": reactive_power,
                     "outserv": int(bool(out_of_service)),
                 },
-                {
-                    "plini": (
-                        "PowerFactory did not retain the requested active power"
-                    ),
-                    "qlini": (
-                        "PowerFactory did not retain the requested reactive power"
-                    ),
-                    "outserv": (
-                        "PowerFactory did not retain the requested service state"
-                    ),
-                },
+                "Load",
             )
 
             actual_name = str(
@@ -1535,20 +1532,7 @@ class DIgSILENTAgent:
                     "qgini": reactive_power,
                     "outserv": int(bool(out_of_service)),
                 },
-                {
-                    "typ_id": (
-                        "PowerFactory did not retain the machine type"
-                    ),
-                    "pgini": (
-                        "PowerFactory did not retain the active power"
-                    ),
-                    "qgini": (
-                        "PowerFactory did not retain the reactive power"
-                    ),
-                    "outserv": (
-                        "PowerFactory did not retain the service state"
-                    ),
-                },
+                "Generator",
             )
 
             actual_name = str(
@@ -1679,17 +1663,7 @@ class DIgSILENTAgent:
                     "dline": length,
                     "outserv": int(bool(out_of_service)),
                 },
-                {
-                    "typ_id": (
-                        "PowerFactory did not retain the line type"
-                    ),
-                    "dline": (
-                        "PowerFactory did not retain the line length"
-                    ),
-                    "outserv": (
-                        "PowerFactory did not retain the service state"
-                    ),
-                },
+                "Line",
             )
 
             actual_name = str(
@@ -1818,14 +1792,7 @@ class DIgSILENTAgent:
                     "typ_id": template_type,
                     "outserv": int(bool(out_of_service)),
                 },
-                {
-                    "typ_id": (
-                        "PowerFactory did not retain the transformer type"
-                    ),
-                    "outserv": (
-                        "PowerFactory did not retain the service state"
-                    ),
-                },
+                "Transformer",
             )
 
             actual_name = str(
