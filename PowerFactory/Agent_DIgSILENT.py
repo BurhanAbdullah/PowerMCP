@@ -937,6 +937,24 @@ class DIgSILENTAgent:
         )
 
     @classmethod
+    def _get_application(cls, open_digsilent: bool = True):
+        global pf
+        if pf is None:
+            _ensure_powerfactory_on_path()
+            import powerfactory as pf
+
+        if cls._shared_app is None:
+            app = pf.GetApplicationExt()
+            if app is None:
+                raise RuntimeError("GetApplicationExt() returned None")
+            cls._shared_app = app
+        else:
+            app = cls._shared_app
+
+        cls._apply_show_preference(app, open_digsilent)
+        return app
+
+    @classmethod
     def add_bus(
         cls,
         bus_name: str,
@@ -947,11 +965,6 @@ class DIgSILENTAgent:
     ) -> tuple[bool, str]:
         """Create a bus and remove it automatically if setup fails."""
         import math
-
-        global pf
-        if pf is None:
-            _ensure_powerfactory_on_path()
-            import powerfactory as pf
 
         name = str(bus_name or "").strip()
         requested_grid = str(grid_name or "").strip()
@@ -971,16 +984,7 @@ class DIgSILENTAgent:
         grid = None
 
         try:
-            if cls._shared_app is None:
-                app = pf.GetApplicationExt()
-                if app is None:
-                    raise RuntimeError("GetApplicationExt() returned None")
-                cls._shared_app = app
-            else:
-                app = cls._shared_app
-
-            cls._apply_show_preference(app, open_digsilent)
-
+            app = cls._get_application(open_digsilent)
             grid = cls._select_grid(app, requested_grid)
 
             existing = grid.GetContents("*.ElmTerm", 1) or []
@@ -1087,11 +1091,6 @@ class DIgSILENTAgent:
         """Create a load connected to an existing bus, with rollback."""
         import math
 
-        global pf
-        if pf is None:
-            _ensure_powerfactory_on_path()
-            import powerfactory as pf
-
         name = str(load_name or "").strip()
         requested_bus = str(bus_name or "").strip()
 
@@ -1117,15 +1116,7 @@ class DIgSILENTAgent:
         created_load = None
 
         try:
-            if cls._shared_app is None:
-                app = pf.GetApplicationExt()
-                if app is None:
-                    raise RuntimeError("GetApplicationExt() returned None")
-                cls._shared_app = app
-            else:
-                app = cls._shared_app
-
-            cls._apply_show_preference(app, open_digsilent)
+            app = cls._get_application(open_digsilent)
             grid = cls._select_grid(app, grid_name)
 
             existing_loads = grid.GetContents("*.ElmLod", 1) or []
@@ -1305,11 +1296,6 @@ class DIgSILENTAgent:
         """Create an ElmSym using the type of an existing generator."""
         import math
 
-        global pf
-        if pf is None:
-            _ensure_powerfactory_on_path()
-            import powerfactory as pf
-
         name = str(generator_name or "").strip()
         requested_bus = str(bus_name or "").strip()
         template_query = str(template_generator or "").strip()
@@ -1339,15 +1325,7 @@ class DIgSILENTAgent:
         cubicle_name = f"{name} Cubicle"
 
         try:
-            if cls._shared_app is None:
-                app = pf.GetApplicationExt()
-                if app is None:
-                    raise RuntimeError("GetApplicationExt() returned None")
-                cls._shared_app = app
-            else:
-                app = cls._shared_app
-
-            cls._apply_show_preference(app, open_digsilent)
+            app = cls._get_application(open_digsilent)
             grid = cls._select_grid(app, grid_name)
 
             templates = (
