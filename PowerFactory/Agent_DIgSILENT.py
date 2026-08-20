@@ -1632,6 +1632,137 @@ class DIgSILENTAgent:
             log.error(f"Transformer creation failed: {message}")
             return False, message
 
+    @classmethod
+    def delete_component(
+        cls,
+        component_type: str,
+        component_name: str,
+        grid_name: str = "",
+        confirmation: str = "",
+        open_digsilent: bool = True,
+    ) -> tuple[bool, str]:
+        """Preview or delete one exactly named supported grid component."""
+        component_types = {
+            "bus": ("ElmTerm", ()),
+            "load": ("ElmLod", ("bus1",)),
+            "generator": ("ElmSym", ("bus1",)),
+            "line": ("ElmLne", ("bus1", "bus2")),
+            "transformer": ("ElmTr2", ("bushv", "buslv")),
+        }
+        kind = str(component_type or "").strip().lower()
+        name = str(component_name or "").strip()
+
+        if kind not in component_types:
+            return False, (
+                "component_type must be one of: "
+                + ", ".join(component_types)
+            )
+        if not name:
+            return False, "component_name must not be empty"
+
+        try:
+            app = cls._get_application(open_digsilent)
+            grid = cls._select_grid(app, grid_name)
+            class_name, connection_attributes = component_types[kind]
+
+            matches = [
+                obj
+                for obj in (
+                    grid.GetContents(f"*.{class_name}", 1) or []
+                )
+                if str(obj.GetAttribute("loc_name")) == name
+            ]
+            if not matches:
+                raise RuntimeError(
+                    f"{kind.capitalize()} not found in the selected grid: "
+                    f"{name}"
+                )
+            if len(matches) > 1:
+                raise RuntimeError(
+                    f"Multiple {kind}s matched the exact name: {name}"
+                )
+
+            component = matches[0]
+            cubicles = []
+
+            if kind == "bus":
+                connected = (
+                    component.GetContents("*.StaCubic", 1) or []
+                )
+                if connected:
+                    raise RuntimeError(
+                        "Bus has connected cubicles; delete its connected "
+                        "components first"
+                    )
+            else:
+                for attribute in connection_attributes:
+                    cubicle = component.GetAttribute(attribute)
+                    if cubicle is not None and cubicle not in cubicles:
+                        cubicles.append(cubicle)
+
+            required = f"DELETE {kind} {name}"
+
+            if not confirmation:
+                return True, (
+                    f"Preview only: {component.GetFullName()} | "
+                    f"confirmation_required={required}"
+                )
+
+            if confirmation != required:
+                raise RuntimeError(
+                    f"confirmation must exactly match: {required}"
+                )
+
+            cubicle_locations = [
+                (cubicle.GetParent(), cubicle.GetFullName())
+                for cubicle in cubicles
+            ]
+
+            component.Delete()
+
+            still_exists = any(
+                str(obj.GetAttribute("loc_name")) == name
+                for obj in (
+                    grid.GetContents(f"*.{class_name}", 1) or []
+                )
+            )
+            if still_exists:
+                raise RuntimeError(
+                    "PowerFactory did not delete the component; "
+                    "cubicles were left unchanged"
+                )
+
+            for cubicle in cubicles:
+                try:
+                    cubicle.Delete()
+                except Exception:
+                    pass
+
+            remaining_cubicles = [
+                full_name
+                for parent, full_name in cubicle_locations
+                if any(
+                    obj.GetFullName() == full_name
+                    for obj in (
+                        parent.GetContents("*.StaCubic", 1) or []
+                    )
+                )
+            ]
+            if remaining_cubicles:
+                raise RuntimeError(
+                    "Component deleted, but connected cubicles remain: "
+                    + ", ".join(remaining_cubicles)
+                )
+
+            message = f"Deleted {kind}: {name}"
+            log.ok(message)
+            return True, message
+
+        except Exception as exc:
+            message = str(exc)
+            log.error(f"Component deletion failed: {message}")
+            return False, message
+
     # ──────────────────────────────────────────────────────────────
     # # LOAD FLOW — run ComLdf on the currently active study case
     # ──────────────────────────────────────────────────────────────

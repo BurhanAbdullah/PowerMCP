@@ -57,6 +57,9 @@ class FakeObject:
         prefix = self.parent.GetFullName() if self.parent else r"\user"
         return f"{prefix}\\{self.attributes['loc_name']}.{self.class_name}"
 
+    def GetParent(self):
+        return self.parent
+
     def GetContents(self, query, recursive):
         return list(self[query.rsplit(".", 1)[-1]])
 
@@ -454,6 +457,74 @@ class ComponentCreationTest(unittest.TestCase):
         self.assertEqual(failing_grid["ElmTr2"], [failing_template])
         self.assertEqual(buses["Bus 02"]["StaCubic"], [])
         self.assertEqual(buses["Bus 30"]["StaCubic"], [])
+
+    def test_delete_component_requires_confirmation_and_cleans_connections(self):
+        template = ("Line 01 - 02.ElmLne", "ElmLne", "TypLne")
+        grid, buses, template_line, _ = self.network(
+            ("Bus 01", "Bus 02"), template
+        )
+
+        ok, message = agent_module.DIgSILENTAgent.add_line(
+            "MCP Test Line",
+            "Bus 01",
+            "Bus 02",
+            template[0],
+            1.0,
+            open_digsilent=False,
+        )
+        self.assertTrue(ok, message)
+
+        ok, message = agent_module.DIgSILENTAgent.delete_component(
+            "line",
+            "MCP Test Line",
+            open_digsilent=False,
+        )
+        self.assertTrue(ok, message)
+        self.assertIn(
+            "confirmation_required=DELETE line MCP Test Line",
+            message,
+        )
+        self.assertEqual(len(grid["ElmLne"]), 2)
+
+        self.assert_failed(
+            agent_module.DIgSILENTAgent.delete_component(
+                "line",
+                "MCP Test Line",
+                confirmation="DELETE line wrong name",
+                open_digsilent=False,
+            ),
+            "confirmation must exactly match",
+        )
+
+        self.assert_failed(
+            agent_module.DIgSILENTAgent.delete_component(
+                "bus",
+                "Bus 01",
+                confirmation="DELETE bus Bus 01",
+                open_digsilent=False,
+            ),
+            "connected cubicles",
+        )
+
+        ok, message = agent_module.DIgSILENTAgent.delete_component(
+            "line",
+            "MCP Test Line",
+            confirmation="DELETE line MCP Test Line",
+            open_digsilent=False,
+        )
+        self.assertTrue(ok, message)
+        self.assertEqual(grid["ElmLne"], [template_line])
+        self.assertEqual(buses["Bus 01"]["StaCubic"], [])
+        self.assertEqual(buses["Bus 02"]["StaCubic"], [])
+
+        ok, message = agent_module.DIgSILENTAgent.delete_component(
+            "bus",
+            "Bus 01",
+            confirmation="DELETE bus Bus 01",
+            open_digsilent=False,
+        )
+        self.assertTrue(ok, message)
+        self.assertNotIn(buses["Bus 01"], grid["ElmTerm"])
 
 
 if __name__ == "__main__":

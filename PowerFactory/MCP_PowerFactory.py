@@ -418,6 +418,36 @@ def add_transformer(
 
 
 @mcp.tool()
+def delete_component(
+    component_type: str,
+    component_name: str,
+    grid_name: str = "",
+    confirmation: str = "",
+    open_digsilent: bool = True,
+) -> str:
+    """
+    Preview or delete one exactly named grid component.
+
+    Call without confirmation first. To perform deletion, repeat the call
+    using the exact confirmation token returned by the preview.
+    """
+    _, DIgSILENTAgent = _load_modules()
+    ok, message = _pf(
+        DIgSILENTAgent.delete_component,
+        component_type,
+        component_name,
+        grid_name,
+        confirmation,
+        open_digsilent,
+    )
+    return json.dumps({
+        "success": ok,
+        "deleted": ok and bool(confirmation),
+        "message": message,
+    })
+
+
+@mcp.tool()
 def run_loadflow(
     open_digsilent: bool = True,
     save_csv: bool = False,
