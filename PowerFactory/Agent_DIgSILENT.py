@@ -1633,6 +1633,130 @@ class DIgSILENTAgent:
             return False, message
 
     @classmethod
+    def add_component(
+        cls,
+        component_type: str,
+        component_name: str,
+        parameters: dict,
+        grid_name: str = "",
+        out_of_service: bool = False,
+        open_digsilent: bool = True,
+    ):
+        """Dispatch component creation to the existing safe add methods."""
+        kind = str(component_type or "").strip().lower()
+
+        schemas = {
+            "bus": ({"nominal_voltage_kv"}, set()),
+            "load": (
+                {"bus_name", "active_power_mw"},
+                {"reactive_power_mvar"},
+            ),
+            "generator": (
+                {"bus_name", "template_generator", "active_power_mw"},
+                {"reactive_power_mvar"},
+            ),
+            "line": (
+                {
+                    "bus1_name",
+                    "bus2_name",
+                    "template_line",
+                    "length_km",
+                },
+                set(),
+            ),
+            "transformer": (
+                {
+                    "high_voltage_bus_name",
+                    "low_voltage_bus_name",
+                    "template_transformer",
+                },
+                set(),
+            ),
+        }
+
+        if kind not in schemas:
+            return (
+                False,
+                f"Unsupported component type: {component_type}. "
+                f"Supported types: {', '.join(schemas)}",
+            )
+
+        if not isinstance(parameters, dict):
+            return False, "parameters must be an object"
+
+        required, optional = schemas[kind]
+        supplied = set(parameters)
+        missing = sorted(required - supplied)
+        unexpected = sorted(supplied - required - optional)
+
+        if missing:
+            return (
+                False,
+                f"Missing parameter(s) for {kind}: {', '.join(missing)}",
+            )
+
+        if unexpected:
+            return (
+                False,
+                f"Unsupported parameter(s) for {kind}: "
+                f"{', '.join(unexpected)}",
+            )
+
+        if kind == "bus":
+            return cls.add_bus(
+                component_name,
+                parameters["nominal_voltage_kv"],
+                grid_name,
+                out_of_service,
+                open_digsilent,
+            )
+
+        if kind == "load":
+            return cls.add_load(
+                component_name,
+                parameters["bus_name"],
+                parameters["active_power_mw"],
+                parameters.get("reactive_power_mvar", 0.0),
+                grid_name,
+                out_of_service,
+                open_digsilent,
+            )
+
+        if kind == "generator":
+            return cls.add_generator(
+                component_name,
+                parameters["bus_name"],
+                parameters["template_generator"],
+                parameters["active_power_mw"],
+                parameters.get("reactive_power_mvar", 0.0),
+                grid_name,
+                out_of_service,
+                open_digsilent,
+            )
+
+        if kind == "line":
+            return cls.add_line(
+                component_name,
+                parameters["bus1_name"],
+                parameters["bus2_name"],
+                parameters["template_line"],
+                parameters["length_km"],
+                grid_name,
+                out_of_service,
+                open_digsilent,
+            )
+
+        return cls.add_transformer(
+            component_name,
+            parameters["high_voltage_bus_name"],
+            parameters["low_voltage_bus_name"],
+            parameters["template_transformer"],
+            grid_name,
+            out_of_service,
+            open_digsilent,
+        )
+
+    @classmethod
     def delete_component(
         cls,
         component_type: str,

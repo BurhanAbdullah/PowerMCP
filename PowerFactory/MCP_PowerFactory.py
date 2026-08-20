@@ -418,6 +418,38 @@ def add_transformer(
 
 
 @mcp.tool()
+def add_component(
+    component_type: str,
+    component_name: str,
+    parameters: dict[str, Any],
+    grid_name: str = "",
+    out_of_service: bool = False,
+    open_digsilent: bool = True,
+) -> str:
+    """
+    Create a bus, load, generator, line, or transformer.
+
+    Required parameters by component type:
+    - bus: nominal_voltage_kv
+    - load: bus_name, active_power_mw; optional reactive_power_mvar
+    - generator: bus_name, template_generator, active_power_mw;
+      optional reactive_power_mvar
+    - line: bus1_name, bus2_name, template_line, length_km
+    - transformer: high_voltage_bus_name, low_voltage_bus_name,
+      template_transformer
+    """
+    return _agent_result(
+        "add_component",
+        component_type,
+        component_name,
+        parameters,
+        grid_name,
+        out_of_service,
+        open_digsilent,
+    )
+
+
+@mcp.tool()
 def delete_component(
     component_type: str,
     component_name: str,

@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 import Agent_DIgSILENT as agent_module
 
@@ -457,6 +458,140 @@ class ComponentCreationTest(unittest.TestCase):
         self.assertEqual(failing_grid["ElmTr2"], [failing_template])
         self.assertEqual(buses["Bus 02"]["StaCubic"], [])
         self.assertEqual(buses["Bus 30"]["StaCubic"], [])
+
+    def test_add_component_dispatch_and_validation(self):
+        cases = [
+            (
+                "bus",
+                "add_bus",
+                {"nominal_voltage_kv": 110.0},
+                ("New Component", 110.0, "Grid", True, False),
+            ),
+            (
+                "load",
+                "add_load",
+                {
+                    "bus_name": "Bus 01",
+                    "active_power_mw": 1.0,
+                    "reactive_power_mvar": 0.25,
+                },
+                (
+                    "New Component",
+                    "Bus 01",
+                    1.0,
+                    0.25,
+                    "Grid",
+                    True,
+                    False,
+                ),
+            ),
+            (
+                "generator",
+                "add_generator",
+                {
+                    "bus_name": "Bus 01",
+                    "template_generator": "G 01.ElmSym",
+                    "active_power_mw": 1.0,
+                },
+                (
+                    "New Component",
+                    "Bus 01",
+                    "G 01.ElmSym",
+                    1.0,
+                    0.0,
+                    "Grid",
+                    True,
+                    False,
+                ),
+            ),
+            (
+                "line",
+                "add_line",
+                {
+                    "bus1_name": "Bus 01",
+                    "bus2_name": "Bus 02",
+                    "template_line": "Line 01 - 02.ElmLne",
+                    "length_km": 1.0,
+                },
+                (
+                    "New Component",
+                    "Bus 01",
+                    "Bus 02",
+                    "Line 01 - 02.ElmLne",
+                    1.0,
+                    "Grid",
+                    True,
+                    False,
+                ),
+            ),
+            (
+                "transformer",
+                "add_transformer",
+                {
+                    "high_voltage_bus_name": "Bus 02",
+                    "low_voltage_bus_name": "Bus 30",
+                    "template_transformer": "Trf 02 - 30.ElmTr2",
+                },
+                (
+                    "New Component",
+                    "Bus 02",
+                    "Bus 30",
+                    "Trf 02 - 30.ElmTr2",
+                    "Grid",
+                    True,
+                    False,
+                ),
+            ),
+        ]
+
+        for kind, method_name, parameters, expected_args in cases:
+            with self.subTest(component_type=kind):
+                with patch.object(
+                    agent_module.DIgSILENTAgent,
+                    method_name,
+                    return_value=(True, kind),
+                ) as method:
+                    result = agent_module.DIgSILENTAgent.add_component(
+                        kind,
+                        "New Component",
+                        parameters,
+                        "Grid",
+                        True,
+                        False,
+                    )
+
+                    self.assertEqual((True, kind), result)
+                    method.assert_called_once_with(*expected_args)
+
+        self.assert_failed(
+            agent_module.DIgSILENTAgent.add_component(
+                "unknown",
+                "New Component",
+                {},
+            ),
+            "Unsupported component type",
+        )
+
+        self.assert_failed(
+            agent_module.DIgSILENTAgent.add_component(
+                "load",
+                "New Component",
+                {"bus_name": "Bus 01"},
+            ),
+            "Missing parameter(s)",
+        )
+
+        self.assert_failed(
+            agent_module.DIgSILENTAgent.add_component(
+                "bus",
+                "New Component",
+                {
+                    "nominal_voltage_kv": 110.0,
+                    "bus_name": "Unexpected",
+                },
+            ),
+            "Unsupported parameter(s)",
+        )
 
     def test_delete_component_requires_confirmation_and_cleans_connections(self):
         template = ("Line 01 - 02.ElmLne", "ElmLne", "TypLne")
