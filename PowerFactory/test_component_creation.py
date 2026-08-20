@@ -1,5 +1,4 @@
 import unittest
-from unittest.mock import patch
 
 import Agent_DIgSILENT as agent_module
 
@@ -142,10 +141,21 @@ class ComponentCreationTest(unittest.TestCase):
         for name, value in expected.items():
             self.assertEqual(obj.GetAttribute(name), value)
 
-    def test_add_bus_validation_and_rollback(self):
+    def add_component(self, component_type, component_name, parameters, **kwargs):
+        return agent_module.DIgSILENTAgent.add_component(
+            component_type,
+            component_name,
+            parameters,
+            **kwargs,
+        )
+
+    def test_add_component_bus_validation_and_rollback(self):
         grid, _, _, _ = self.network()
-        ok, message = agent_module.DIgSILENTAgent.add_bus(
-            "MCP Test Bus", 110.0, open_digsilent=False
+        ok, message = self.add_component(
+            "bus",
+            "MCP Test Bus",
+            {"nominal_voltage_kv": 110.0},
+            open_digsilent=False,
         )
         self.assertTrue(ok, message)
         self.assert_attributes(
@@ -154,14 +164,20 @@ class ComponentCreationTest(unittest.TestCase):
         )
 
         self.assert_failed(
-            agent_module.DIgSILENTAgent.add_bus(
-                "MCP Test Bus", 110.0, open_digsilent=False
+            self.add_component(
+                "bus",
+                "MCP Test Bus",
+                {"nominal_voltage_kv": 110.0},
+                open_digsilent=False,
             ),
             "already exists",
         )
         self.assert_failed(
-            agent_module.DIgSILENTAgent.add_bus(
-                "Invalid Bus", -1.0, open_digsilent=False
+            self.add_component(
+                "bus",
+                "Invalid Bus",
+                {"nominal_voltage_kv": -1.0},
+                open_digsilent=False,
             ),
             "finite positive",
         )
@@ -171,14 +187,18 @@ class ComponentCreationTest(unittest.TestCase):
         grid_b = FakeObject(None, "ElmNet", "Grid B")
         self.use_application(FakeApplication([grid_a, grid_b]))
         self.assert_failed(
-            agent_module.DIgSILENTAgent.add_bus(
-                "Ambiguous Bus", 20.0, open_digsilent=False
+            self.add_component(
+                "bus",
+                "Ambiguous Bus",
+                {"nominal_voltage_kv": 20.0},
+                open_digsilent=False,
             ),
             "Multiple grids",
         )
-        ok, message = agent_module.DIgSILENTAgent.add_bus(
+        ok, message = self.add_component(
+            "bus",
             "Selected Bus",
-            20.0,
+            {"nominal_voltage_kv": 20.0},
             grid_name="Grid B",
             out_of_service=True,
             open_digsilent=False,
@@ -190,21 +210,27 @@ class ComponentCreationTest(unittest.TestCase):
         failing_grid, _, _, _ = self.network()
         failing_grid.reject_attribute = "uknom"
         self.assert_failed(
-            agent_module.DIgSILENTAgent.add_bus(
-                "Rollback Bus", 110.0, open_digsilent=False
+            self.add_component(
+                "bus",
+                "Rollback Bus",
+                {"nominal_voltage_kv": 110.0},
+                open_digsilent=False,
             ),
             "rolled_back=True",
         )
         self.assertEqual(failing_grid["ElmTerm"], [])
 
-    def test_add_load_validation_and_rollback(self):
+    def test_add_component_load_validation_and_rollback(self):
         grid, buses, _, _ = self.network(("Bus 01",))
         bus = buses["Bus 01"]
-        ok, message = agent_module.DIgSILENTAgent.add_load(
+        ok, message = self.add_component(
+            "load",
             "MCP Test Load",
-            "Bus 01",
-            50.0,
-            12.5,
+            {
+                "bus_name": "Bus 01",
+                "active_power_mw": 50.0,
+                "reactive_power_mvar": 12.5,
+            },
             out_of_service=True,
             open_digsilent=False,
         )
@@ -217,20 +243,29 @@ class ComponentCreationTest(unittest.TestCase):
         )
 
         self.assert_failed(
-            agent_module.DIgSILENTAgent.add_load(
-                "MCP Test Load", "Bus 01", 50.0, open_digsilent=False
+            self.add_component(
+                "load",
+                "MCP Test Load",
+                {"bus_name": "Bus 01", "active_power_mw": 50.0},
+                open_digsilent=False,
             ),
             "already exists",
         )
         self.assert_failed(
-            agent_module.DIgSILENTAgent.add_load(
-                "Missing Bus Load", "Unknown Bus", 10.0, open_digsilent=False
+            self.add_component(
+                "load",
+                "Missing Bus Load",
+                {"bus_name": "Unknown Bus", "active_power_mw": 10.0},
+                open_digsilent=False,
             ),
             "Bus not found",
         )
         self.assert_failed(
-            agent_module.DIgSILENTAgent.add_load(
-                "Invalid Load", "Bus 01", -1.0, open_digsilent=False
+            self.add_component(
+                "load",
+                "Invalid Load",
+                {"bus_name": "Bus 01", "active_power_mw": -1.0},
+                open_digsilent=False,
             ),
             "finite and non-negative",
         )
@@ -238,25 +273,31 @@ class ComponentCreationTest(unittest.TestCase):
         failing_grid, buses, _, _ = self.network(("Bus 01",))
         failing_grid.reject_attribute = "plini"
         self.assert_failed(
-            agent_module.DIgSILENTAgent.add_load(
-                "Rollback Load", "Bus 01", 10.0, open_digsilent=False
+            self.add_component(
+                "load",
+                "Rollback Load",
+                {"bus_name": "Bus 01", "active_power_mw": 10.0},
+                open_digsilent=False,
             ),
             "rolled_back=True",
         )
         self.assertEqual(failing_grid["ElmLod"], [])
         self.assertEqual(buses["Bus 01"]["StaCubic"], [])
 
-    def test_add_generator_validation_and_rollback(self):
+    def test_add_component_generator_validation_and_rollback(self):
         template = ("G 01.ElmSym", "ElmSym", "TypSym")
         grid, buses, template_object, machine_type = self.network(
             ("Bus 01",), template
         )
-        ok, message = agent_module.DIgSILENTAgent.add_generator(
+        ok, message = self.add_component(
+            "generator",
             "MCP Test Generator",
-            "Bus 01",
-            template[0],
-            25.0,
-            5.0,
+            {
+                "bus_name": "Bus 01",
+                "template_generator": template[0],
+                "active_power_mw": 25.0,
+                "reactive_power_mvar": 5.0,
+            },
             out_of_service=True,
             open_digsilent=False,
         )
@@ -272,21 +313,27 @@ class ComponentCreationTest(unittest.TestCase):
         )
 
         self.assert_failed(
-            agent_module.DIgSILENTAgent.add_generator(
+            self.add_component(
+                "generator",
                 "MCP Test Generator",
-                "Bus 01",
-                template[0],
-                25.0,
+                {
+                    "bus_name": "Bus 01",
+                    "template_generator": template[0],
+                    "active_power_mw": 25.0,
+                },
                 open_digsilent=False,
             ),
             "already exists",
         )
         self.assert_failed(
-            agent_module.DIgSILENTAgent.add_generator(
+            self.add_component(
+                "generator",
                 "Missing Template Generator",
-                "Bus 01",
-                "Unknown.ElmSym",
-                10.0,
+                {
+                    "bus_name": "Bus 01",
+                    "template_generator": "Unknown.ElmSym",
+                    "active_power_mw": 10.0,
+                },
                 open_digsilent=False,
             ),
             "Template generator not found",
@@ -297,11 +344,14 @@ class ComponentCreationTest(unittest.TestCase):
         )
         failing_grid.reject_attribute = "pgini"
         self.assert_failed(
-            agent_module.DIgSILENTAgent.add_generator(
+            self.add_component(
+                "generator",
                 "Rollback Generator",
-                "Bus 01",
-                template[0],
-                10.0,
+                {
+                    "bus_name": "Bus 01",
+                    "template_generator": template[0],
+                    "active_power_mw": 10.0,
+                },
                 open_digsilent=False,
             ),
             "rolled_back=True",
@@ -310,17 +360,20 @@ class ComponentCreationTest(unittest.TestCase):
         self.assertEqual(buses["Bus 01"]["StaCubic"], [])
         self.assertIsNotNone(template_object)
 
-    def test_add_line_validation_and_rollback(self):
+    def test_add_component_line_validation_and_rollback(self):
         template = ("Line 01 - 02.ElmLne", "ElmLne", "TypLne")
         grid, buses, _, line_type = self.network(
             ("Bus 01", "Bus 02"), template
         )
-        ok, message = agent_module.DIgSILENTAgent.add_line(
+        ok, message = self.add_component(
+            "line",
             "MCP Test Line",
-            "Bus 01",
-            "Bus 02",
-            template[0],
-            10.0,
+            {
+                "bus1_name": "Bus 01",
+                "bus2_name": "Bus 02",
+                "template_line": template[0],
+                "length_km": 10.0,
+            },
             out_of_service=True,
             open_digsilent=False,
         )
@@ -335,33 +388,42 @@ class ComponentCreationTest(unittest.TestCase):
         )
         self.assert_attributes(created, {"dline": 10.0, "outserv": 1})
 
-        duplicate = agent_module.DIgSILENTAgent.add_line(
+        duplicate = self.add_component(
+            "line",
             "MCP Test Line",
-            "Bus 01",
-            "Bus 02",
-            template[0],
-            10.0,
+            {
+                "bus1_name": "Bus 01",
+                "bus2_name": "Bus 02",
+                "template_line": template[0],
+                "length_km": 10.0,
+            },
             open_digsilent=False,
         )
         self.assert_failed(duplicate, "already exists")
         self.assert_failed(
-            agent_module.DIgSILENTAgent.add_line(
+            self.add_component(
+                "line",
                 "Same Bus Line",
-                "Bus 01",
-                "Bus 01",
-                template[0],
-                10.0,
+                {
+                    "bus1_name": "Bus 01",
+                    "bus2_name": "Bus 01",
+                    "template_line": template[0],
+                    "length_km": 10.0,
+                },
                 open_digsilent=False,
             ),
             "must be different",
         )
         self.assert_failed(
-            agent_module.DIgSILENTAgent.add_line(
+            self.add_component(
+                "line",
                 "Missing Template Line",
-                "Bus 01",
-                "Bus 02",
-                "Unknown.ElmLne",
-                10.0,
+                {
+                    "bus1_name": "Bus 01",
+                    "bus2_name": "Bus 02",
+                    "template_line": "Unknown.ElmLne",
+                    "length_km": 10.0,
+                },
                 open_digsilent=False,
             ),
             "Template line not found",
@@ -372,12 +434,15 @@ class ComponentCreationTest(unittest.TestCase):
         )
         failing_grid.reject_attribute = "dline"
         self.assert_failed(
-            agent_module.DIgSILENTAgent.add_line(
+            self.add_component(
+                "line",
                 "Rollback Line",
-                "Bus 01",
-                "Bus 02",
-                template[0],
-                10.0,
+                {
+                    "bus1_name": "Bus 01",
+                    "bus2_name": "Bus 02",
+                    "template_line": template[0],
+                    "length_km": 10.0,
+                },
                 open_digsilent=False,
             ),
             "rolled_back=True",
@@ -386,16 +451,19 @@ class ComponentCreationTest(unittest.TestCase):
         self.assertEqual(buses["Bus 01"]["StaCubic"], [])
         self.assertEqual(buses["Bus 02"]["StaCubic"], [])
 
-    def test_add_transformer_validation_and_rollback(self):
+    def test_add_component_transformer_validation_and_rollback(self):
         template = ("Trf 02 - 30.ElmTr2", "ElmTr2", "TypTr2")
         grid, buses, _, transformer_type = self.network(
             ("Bus 02", "Bus 30"), template
         )
-        ok, message = agent_module.DIgSILENTAgent.add_transformer(
+        ok, message = self.add_component(
+            "transformer",
             "MCP Test Transformer",
-            "Bus 02",
-            "Bus 30",
-            template[0],
+            {
+                "high_voltage_bus_name": "Bus 02",
+                "low_voltage_bus_name": "Bus 30",
+                "template_transformer": template[0],
+            },
             out_of_service=True,
             open_digsilent=False,
         )
@@ -411,31 +479,40 @@ class ComponentCreationTest(unittest.TestCase):
         self.assertEqual(created.GetAttribute("outserv"), 1)
 
         self.assert_failed(
-            agent_module.DIgSILENTAgent.add_transformer(
+            self.add_component(
+                "transformer",
                 "MCP Test Transformer",
-                "Bus 02",
-                "Bus 30",
-                template[0],
+                {
+                    "high_voltage_bus_name": "Bus 02",
+                    "low_voltage_bus_name": "Bus 30",
+                    "template_transformer": template[0],
+                },
                 open_digsilent=False,
             ),
             "already exists",
         )
         self.assert_failed(
-            agent_module.DIgSILENTAgent.add_transformer(
+            self.add_component(
+                "transformer",
                 "Same Bus Transformer",
-                "Bus 02",
-                "Bus 02",
-                template[0],
+                {
+                    "high_voltage_bus_name": "Bus 02",
+                    "low_voltage_bus_name": "Bus 02",
+                    "template_transformer": template[0],
+                },
                 open_digsilent=False,
             ),
             "must be different",
         )
         self.assert_failed(
-            agent_module.DIgSILENTAgent.add_transformer(
+            self.add_component(
+                "transformer",
                 "Missing Template Transformer",
-                "Bus 02",
-                "Bus 30",
-                "Unknown.ElmTr2",
+                {
+                    "high_voltage_bus_name": "Bus 02",
+                    "low_voltage_bus_name": "Bus 30",
+                    "template_transformer": "Unknown.ElmTr2",
+                },
                 open_digsilent=False,
             ),
             "Template transformer not found",
@@ -446,11 +523,14 @@ class ComponentCreationTest(unittest.TestCase):
         )
         failing_grid.reject_attribute = "typ_id"
         self.assert_failed(
-            agent_module.DIgSILENTAgent.add_transformer(
+            self.add_component(
+                "transformer",
                 "Rollback Transformer",
-                "Bus 02",
-                "Bus 30",
-                template[0],
+                {
+                    "high_voltage_bus_name": "Bus 02",
+                    "low_voltage_bus_name": "Bus 30",
+                    "template_transformer": template[0],
+                },
                 open_digsilent=False,
             ),
             "rolled_back=True",
@@ -459,112 +539,9 @@ class ComponentCreationTest(unittest.TestCase):
         self.assertEqual(buses["Bus 02"]["StaCubic"], [])
         self.assertEqual(buses["Bus 30"]["StaCubic"], [])
 
-    def test_add_component_dispatch_and_validation(self):
-        cases = [
-            (
-                "bus",
-                "add_bus",
-                {"nominal_voltage_kv": 110.0},
-                ("New Component", 110.0, "Grid", True, False),
-            ),
-            (
-                "load",
-                "add_load",
-                {
-                    "bus_name": "Bus 01",
-                    "active_power_mw": 1.0,
-                    "reactive_power_mvar": 0.25,
-                },
-                (
-                    "New Component",
-                    "Bus 01",
-                    1.0,
-                    0.25,
-                    "Grid",
-                    True,
-                    False,
-                ),
-            ),
-            (
-                "generator",
-                "add_generator",
-                {
-                    "bus_name": "Bus 01",
-                    "template_generator": "G 01.ElmSym",
-                    "active_power_mw": 1.0,
-                },
-                (
-                    "New Component",
-                    "Bus 01",
-                    "G 01.ElmSym",
-                    1.0,
-                    0.0,
-                    "Grid",
-                    True,
-                    False,
-                ),
-            ),
-            (
-                "line",
-                "add_line",
-                {
-                    "bus1_name": "Bus 01",
-                    "bus2_name": "Bus 02",
-                    "template_line": "Line 01 - 02.ElmLne",
-                    "length_km": 1.0,
-                },
-                (
-                    "New Component",
-                    "Bus 01",
-                    "Bus 02",
-                    "Line 01 - 02.ElmLne",
-                    1.0,
-                    "Grid",
-                    True,
-                    False,
-                ),
-            ),
-            (
-                "transformer",
-                "add_transformer",
-                {
-                    "high_voltage_bus_name": "Bus 02",
-                    "low_voltage_bus_name": "Bus 30",
-                    "template_transformer": "Trf 02 - 30.ElmTr2",
-                },
-                (
-                    "New Component",
-                    "Bus 02",
-                    "Bus 30",
-                    "Trf 02 - 30.ElmTr2",
-                    "Grid",
-                    True,
-                    False,
-                ),
-            ),
-        ]
-
-        for kind, method_name, parameters, expected_args in cases:
-            with self.subTest(component_type=kind):
-                with patch.object(
-                    agent_module.DIgSILENTAgent,
-                    method_name,
-                    return_value=(True, kind),
-                ) as method:
-                    result = agent_module.DIgSILENTAgent.add_component(
-                        kind,
-                        "New Component",
-                        parameters,
-                        "Grid",
-                        True,
-                        False,
-                    )
-
-                    self.assertEqual((True, kind), result)
-                    method.assert_called_once_with(*expected_args)
-
+    def test_add_component_validation(self):
         self.assert_failed(
-            agent_module.DIgSILENTAgent.add_component(
+            self.add_component(
                 "unknown",
                 "New Component",
                 {},
@@ -573,7 +550,7 @@ class ComponentCreationTest(unittest.TestCase):
         )
 
         self.assert_failed(
-            agent_module.DIgSILENTAgent.add_component(
+            self.add_component(
                 "load",
                 "New Component",
                 {"bus_name": "Bus 01"},
@@ -582,7 +559,7 @@ class ComponentCreationTest(unittest.TestCase):
         )
 
         self.assert_failed(
-            agent_module.DIgSILENTAgent.add_component(
+            self.add_component(
                 "bus",
                 "New Component",
                 {
@@ -599,12 +576,15 @@ class ComponentCreationTest(unittest.TestCase):
             ("Bus 01", "Bus 02"), template
         )
 
-        ok, message = agent_module.DIgSILENTAgent.add_line(
+        ok, message = self.add_component(
+            "line",
             "MCP Test Line",
-            "Bus 01",
-            "Bus 02",
-            template[0],
-            1.0,
+            {
+                "bus1_name": "Bus 01",
+                "bus2_name": "Bus 02",
+                "template_line": template[0],
+                "length_km": 1.0,
+            },
             open_digsilent=False,
         )
         self.assertTrue(ok, message)

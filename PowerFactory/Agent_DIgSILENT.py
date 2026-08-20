@@ -1242,397 +1242,6 @@ class DIgSILENTAgent:
             raise RuntimeError(message) from exc
 
     @classmethod
-    def add_bus(
-        cls,
-        bus_name: str,
-        nominal_voltage_kv: float,
-        grid_name: str = "",
-        out_of_service: bool = False,
-        open_digsilent: bool = True,
-    ) -> tuple[bool, str]:
-        """Create a bus and remove it automatically if setup fails."""
-        import math
-
-        name = str(bus_name or "").strip()
-        requested_grid = str(grid_name or "").strip()
-
-        if not name:
-            return False, "bus_name must not be empty"
-
-        try:
-            voltage = float(nominal_voltage_kv)
-        except (TypeError, ValueError):
-            return False, "nominal_voltage_kv must be a number"
-
-        if not math.isfinite(voltage) or voltage <= 0:
-            return False, "nominal_voltage_kv must be a finite positive number"
-
-        try:
-            app = cls._get_application(open_digsilent)
-            grid, _, created_bus, actual = cls._create_connected_element(
-                app,
-                "ElmTerm",
-                "Bus",
-                name,
-                (),
-                requested_grid,
-                attributes={
-                    "uknom": voltage,
-                    "outserv": int(bool(out_of_service)),
-                },
-                connection_attributes=(),
-            )
-
-            actual_voltage = float(actual["uknom"])
-            actual_outserv = int(actual["outserv"])
-
-            grid_label = str(grid.GetAttribute("loc_name"))
-            full_name = created_bus.GetFullName()
-
-            log.ok(
-                f"Created bus '{name}' in grid '{grid_label}' "
-                f"at {actual_voltage} kV"
-            )
-            return (
-                True,
-                f"Created bus: {full_name} | "
-                f"nominal_voltage_kv={actual_voltage} | "
-                f"out_of_service={bool(actual_outserv)}",
-            )
-
-        except Exception as exc:
-            message = str(exc)
-            log.error(f"Bus creation failed: {message}")
-            return False, message
-
-    @classmethod
-    def add_load(
-        cls,
-        load_name: str,
-        bus_name: str,
-        active_power_mw: float,
-        reactive_power_mvar: float = 0.0,
-        grid_name: str = "",
-        out_of_service: bool = False,
-        open_digsilent: bool = True,
-    ) -> tuple[bool, str]:
-        """Create a load connected to an existing bus, with rollback."""
-        import math
-
-        name = str(load_name or "").strip()
-        requested_bus = str(bus_name or "").strip()
-
-        if not name:
-            return False, "load_name must not be empty"
-        if not requested_bus:
-            return False, "bus_name must not be empty"
-
-        try:
-            active_power = float(active_power_mw)
-            reactive_power = float(reactive_power_mvar)
-        except (TypeError, ValueError):
-            return False, "active and reactive power must be numbers"
-
-        if not math.isfinite(active_power) or active_power < 0:
-            return False, "active_power_mw must be finite and non-negative"
-        if not math.isfinite(reactive_power):
-            return False, "reactive_power_mvar must be finite"
-
-        try:
-            app = cls._get_application(open_digsilent)
-            _, _, created_load, actual = cls._create_connected_element(
-                app,
-                "ElmLod",
-                "Load",
-                name,
-                (requested_bus,),
-                grid_name,
-                attributes={
-                    "plini": active_power,
-                    "qlini": reactive_power,
-                    "outserv": int(bool(out_of_service)),
-                },
-            )
-
-            actual_active_power = float(actual["plini"])
-            actual_reactive_power = float(actual["qlini"])
-            actual_outserv = int(actual["outserv"])
-
-            full_name = created_load.GetFullName()
-            log.ok(
-                f"Created load '{name}' on bus '{requested_bus}'"
-            )
-            return (
-                True,
-                f"Created load: {full_name} | "
-                f"bus={requested_bus} | "
-                f"active_power_mw={actual_active_power} | "
-                f"reactive_power_mvar={actual_reactive_power} | "
-                f"out_of_service={bool(actual_outserv)}",
-            )
-
-        except Exception as exc:
-            message = str(exc)
-            log.error(f"Load creation failed: {message}")
-            return False, message
-
-    @classmethod
-    def add_generator(
-        cls,
-        generator_name: str,
-        bus_name: str,
-        template_generator: str,
-        active_power_mw: float,
-        reactive_power_mvar: float = 0.0,
-        grid_name: str = "",
-        out_of_service: bool = False,
-        open_digsilent: bool = True,
-    ) -> tuple[bool, str]:
-        """Create an ElmSym using the type of an existing generator."""
-        import math
-
-        name = str(generator_name or "").strip()
-        requested_bus = str(bus_name or "").strip()
-        template_query = str(template_generator or "").strip()
-
-        if not name:
-            return False, "generator_name must not be empty"
-        if not requested_bus:
-            return False, "bus_name must not be empty"
-        if not template_query:
-            return False, "template_generator must not be empty"
-
-        try:
-            active_power = float(active_power_mw)
-            reactive_power = float(reactive_power_mvar)
-        except (TypeError, ValueError):
-            return False, "active and reactive power must be numbers"
-
-        if not math.isfinite(active_power) or active_power < 0:
-            return False, "active_power_mw must be finite and non-negative"
-        if not math.isfinite(reactive_power):
-            return False, "reactive_power_mvar must be finite"
-
-        try:
-            app = cls._get_application(open_digsilent)
-
-            template_type = cls._get_template_type(
-                app,
-                template_query,
-                "ElmSym",
-                "generator",
-                "synchronous-machine type",
-            )
-
-            _, _, created_generator, actual = cls._create_connected_element(
-                app,
-                "ElmSym",
-                "Generator",
-                name,
-                (requested_bus,),
-                grid_name,
-                attributes={
-                    "typ_id": template_type,
-                    "pgini": active_power,
-                    "qgini": reactive_power,
-                    "outserv": int(bool(out_of_service)),
-                },
-            )
-
-            actual_active_power = float(actual["pgini"])
-            actual_reactive_power = float(actual["qgini"])
-            actual_outserv = int(actual["outserv"])
-
-            full_name = created_generator.GetFullName()
-            log.ok(
-                f"Created generator '{name}' on bus '{requested_bus}'"
-            )
-            return (
-                True,
-                f"Created generator: {full_name} | "
-                f"bus={requested_bus} | "
-                f"template={template_query} | "
-                f"active_power_mw={actual_active_power} | "
-                f"reactive_power_mvar={actual_reactive_power} | "
-                f"out_of_service={bool(actual_outserv)}",
-            )
-
-        except Exception as exc:
-            message = str(exc)
-            log.error(f"Generator creation failed: {message}")
-            return False, message
-
-    @classmethod
-    def add_line(
-        cls,
-        line_name: str,
-        bus1_name: str,
-        bus2_name: str,
-        template_line: str,
-        length_km: float,
-        grid_name: str = "",
-        out_of_service: bool = False,
-        open_digsilent: bool = True,
-    ) -> tuple[bool, str]:
-        """Create an ElmLne using the type of an existing line."""
-        import math
-
-        name = str(line_name or "").strip()
-        requested_bus1 = str(bus1_name or "").strip()
-        requested_bus2 = str(bus2_name or "").strip()
-        template_query = str(template_line or "").strip()
-
-        if not name:
-            return False, "line_name must not be empty"
-        if not requested_bus1 or not requested_bus2:
-            return False, "bus1_name and bus2_name must not be empty"
-        if requested_bus1.casefold() == requested_bus2.casefold():
-            return False, "bus1_name and bus2_name must be different"
-        if not template_query:
-            return False, "template_line must not be empty"
-
-        try:
-            length = float(length_km)
-        except (TypeError, ValueError):
-            return False, "length_km must be a number"
-
-        if not math.isfinite(length) or length <= 0:
-            return False, "length_km must be a finite positive number"
-
-        try:
-            app = cls._get_application(open_digsilent)
-
-            template_type = cls._get_template_type(
-                app,
-                template_query,
-                "ElmLne",
-                "line",
-                "line type",
-            )
-
-            _, _, created_line, actual = cls._create_connected_element(
-                app,
-                "ElmLne",
-                "Line",
-                name,
-                (requested_bus1, requested_bus2),
-                grid_name,
-                attributes={
-                    "typ_id": template_type,
-                    "dline": length,
-                    "outserv": int(bool(out_of_service)),
-                },
-                connection_attributes=("bus1", "bus2"),
-            )
-
-            actual_length = float(actual["dline"])
-            actual_outserv = int(actual["outserv"])
-
-            full_name = created_line.GetFullName()
-            log.ok(
-                f"Created line '{name}' between "
-                f"'{requested_bus1}' and '{requested_bus2}'"
-            )
-            return (
-                True,
-                f"Created line: {full_name} | "
-                f"bus1={requested_bus1} | "
-                f"bus2={requested_bus2} | "
-                f"template={template_query} | "
-                f"length_km={actual_length} | "
-                f"out_of_service={bool(actual_outserv)}",
-            )
-
-        except Exception as exc:
-            message = str(exc)
-            log.error(f"Line creation failed: {message}")
-            return False, message
-
-    @classmethod
-    def add_transformer(
-        cls,
-        transformer_name: str,
-        high_voltage_bus_name: str,
-        low_voltage_bus_name: str,
-        template_transformer: str,
-        grid_name: str = "",
-        out_of_service: bool = False,
-        open_digsilent: bool = True,
-    ) -> tuple[bool, str]:
-        """Create an ElmTr2 using the type of an existing transformer."""
-        name = str(transformer_name or "").strip()
-        high_voltage_bus = str(
-            high_voltage_bus_name or ""
-        ).strip()
-        low_voltage_bus = str(
-            low_voltage_bus_name or ""
-        ).strip()
-        template_query = str(
-            template_transformer or ""
-        ).strip()
-
-        if not name:
-            return False, "transformer_name must not be empty"
-        if not high_voltage_bus or not low_voltage_bus:
-            return (
-                False,
-                "high_voltage_bus_name and low_voltage_bus_name "
-                "must not be empty",
-            )
-        if high_voltage_bus.casefold() == low_voltage_bus.casefold():
-            return False, "Transformer buses must be different"
-        if not template_query:
-            return False, "template_transformer must not be empty"
-
-        try:
-            app = cls._get_application(open_digsilent)
-
-            template_type = cls._get_template_type(
-                app,
-                template_query,
-                "ElmTr2",
-                "transformer",
-                "transformer type",
-            )
-
-            _, _, created_transformer, actual = (
-                cls._create_connected_element(
-                    app,
-                    "ElmTr2",
-                    "Transformer",
-                    name,
-                    (high_voltage_bus, low_voltage_bus),
-                    grid_name,
-                    attributes={
-                        "typ_id": template_type,
-                        "outserv": int(bool(out_of_service)),
-                    },
-                    connection_attributes=("bushv", "buslv"),
-                )
-            )
-
-            actual_outserv = int(actual["outserv"])
-
-            full_name = created_transformer.GetFullName()
-            log.ok(
-                f"Created transformer '{name}' between "
-                f"'{high_voltage_bus}' and '{low_voltage_bus}'"
-            )
-            return (
-                True,
-                f"Created transformer: {full_name} | "
-                f"high_voltage_bus={high_voltage_bus} | "
-                f"low_voltage_bus={low_voltage_bus} | "
-                f"template={template_query} | "
-                f"out_of_service={bool(actual_outserv)}",
-            )
-
-        except Exception as exc:
-            message = str(exc)
-            log.error(f"Transformer creation failed: {message}")
-            return False, message
-
-    @classmethod
     def add_component(
         cls,
         component_type: str,
@@ -1641,9 +1250,12 @@ class DIgSILENTAgent:
         grid_name: str = "",
         out_of_service: bool = False,
         open_digsilent: bool = True,
-    ):
-        """Dispatch component creation to the existing safe add methods."""
+    ) -> tuple[bool, str]:
+        """Create one supported component, verifying and rolling it back."""
+        import math
+
         kind = str(component_type or "").strip().lower()
+        name = str(component_name or "").strip()
 
         schemas = {
             "bus": ({"nominal_voltage_kv"}, set()),
@@ -1683,6 +1295,8 @@ class DIgSILENTAgent:
 
         if not isinstance(parameters, dict):
             return False, "parameters must be an object"
+        if not name:
+            return False, "component_name must not be empty"
 
         required, optional = schemas[kind]
         supplied = set(parameters)
@@ -1702,59 +1316,168 @@ class DIgSILENTAgent:
                 f"{', '.join(unexpected)}",
             )
 
-        if kind == "bus":
-            return cls.add_bus(
-                component_name,
-                parameters["nominal_voltage_kv"],
+        def required_text(key):
+            value = str(parameters[key] or "").strip()
+            if not value:
+                raise RuntimeError(f"{key} must not be empty")
+            return value
+
+        def number(key, *, positive=False, non_negative=False):
+            try:
+                value = float(parameters.get(key, 0.0))
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError(f"{key} must be a number") from exc
+            if positive and (not math.isfinite(value) or value <= 0):
+                raise RuntimeError(f"{key} must be a finite positive number")
+            if non_negative and (not math.isfinite(value) or value < 0):
+                raise RuntimeError(f"{key} must be finite and non-negative")
+            if not positive and not non_negative and not math.isfinite(value):
+                raise RuntimeError(f"{key} must be finite")
+            return value
+
+        try:
+            template = None
+            outserv = int(bool(out_of_service))
+
+            if kind == "bus":
+                class_name, label = "ElmTerm", "Bus"
+                buses, connections = (), ()
+                attributes = {
+                    "uknom": number("nominal_voltage_kv", positive=True),
+                    "outserv": outserv,
+                }
+            elif kind == "load":
+                class_name, label = "ElmLod", "Load"
+                buses, connections = (required_text("bus_name"),), ("bus1",)
+                attributes = {
+                    "plini": number("active_power_mw", non_negative=True),
+                    "qlini": number("reactive_power_mvar"),
+                    "outserv": outserv,
+                }
+            elif kind == "generator":
+                class_name, label = "ElmSym", "Generator"
+                buses, connections = (required_text("bus_name"),), ("bus1",)
+                template = (
+                    required_text("template_generator"),
+                    "generator",
+                    "synchronous-machine type",
+                )
+                attributes = {
+                    "pgini": number("active_power_mw", non_negative=True),
+                    "qgini": number("reactive_power_mvar"),
+                    "outserv": outserv,
+                }
+            elif kind == "line":
+                class_name, label = "ElmLne", "Line"
+                buses = (
+                    required_text("bus1_name"),
+                    required_text("bus2_name"),
+                )
+                connections = ("bus1", "bus2")
+                template = (
+                    required_text("template_line"),
+                    "line",
+                    "line type",
+                )
+                attributes = {
+                    "dline": number("length_km", positive=True),
+                    "outserv": outserv,
+                }
+            else:
+                class_name, label = "ElmTr2", "Transformer"
+                buses = (
+                    required_text("high_voltage_bus_name"),
+                    required_text("low_voltage_bus_name"),
+                )
+                connections = ("bushv", "buslv")
+                template = (
+                    required_text("template_transformer"),
+                    "transformer",
+                    "transformer type",
+                )
+                attributes = {"outserv": outserv}
+
+            if len(buses) == 2 and buses[0].casefold() == buses[1].casefold():
+                raise RuntimeError(f"{label} buses must be different")
+
+            app = cls._get_application(open_digsilent)
+            template_query = ""
+            if template:
+                template_query, template_label, type_label = template
+                attributes["typ_id"] = cls._get_template_type(
+                    app,
+                    template_query,
+                    class_name,
+                    template_label,
+                    type_label,
+                )
+
+            grid, _, created, actual = cls._create_connected_element(
+                app,
+                class_name,
+                label,
+                name,
+                buses,
                 grid_name,
-                out_of_service,
-                open_digsilent,
+                attributes=attributes,
+                connection_attributes=connections,
             )
 
-        if kind == "load":
-            return cls.add_load(
-                component_name,
-                parameters["bus_name"],
-                parameters["active_power_mw"],
-                parameters.get("reactive_power_mvar", 0.0),
-                grid_name,
-                out_of_service,
-                open_digsilent,
+            full_name = created.GetFullName()
+            service_state = bool(int(actual["outserv"]))
+            if kind == "bus":
+                voltage = float(actual["uknom"])
+                grid_label = str(grid.GetAttribute("loc_name"))
+                log.ok(
+                    f"Created bus '{name}' in grid '{grid_label}' "
+                    f"at {voltage} kV"
+                )
+                details = f"nominal_voltage_kv={voltage}"
+            elif kind == "load":
+                log.ok(f"Created load '{name}' on bus '{buses[0]}'")
+                details = (
+                    f"bus={buses[0]} | "
+                    f"active_power_mw={float(actual['plini'])} | "
+                    f"reactive_power_mvar={float(actual['qlini'])}"
+                )
+            elif kind == "generator":
+                log.ok(f"Created generator '{name}' on bus '{buses[0]}'")
+                details = (
+                    f"bus={buses[0]} | template={template_query} | "
+                    f"active_power_mw={float(actual['pgini'])} | "
+                    f"reactive_power_mvar={float(actual['qgini'])}"
+                )
+            elif kind == "line":
+                log.ok(
+                    f"Created line '{name}' between "
+                    f"'{buses[0]}' and '{buses[1]}'"
+                )
+                details = (
+                    f"bus1={buses[0]} | bus2={buses[1]} | "
+                    f"template={template_query} | "
+                    f"length_km={float(actual['dline'])}"
+                )
+            else:
+                log.ok(
+                    f"Created transformer '{name}' between "
+                    f"'{buses[0]}' and '{buses[1]}'"
+                )
+                details = (
+                    f"high_voltage_bus={buses[0]} | "
+                    f"low_voltage_bus={buses[1]} | "
+                    f"template={template_query}"
+                )
+
+            return (
+                True,
+                f"Created {kind}: {full_name} | {details} | "
+                f"out_of_service={service_state}",
             )
 
-        if kind == "generator":
-            return cls.add_generator(
-                component_name,
-                parameters["bus_name"],
-                parameters["template_generator"],
-                parameters["active_power_mw"],
-                parameters.get("reactive_power_mvar", 0.0),
-                grid_name,
-                out_of_service,
-                open_digsilent,
-            )
-
-        if kind == "line":
-            return cls.add_line(
-                component_name,
-                parameters["bus1_name"],
-                parameters["bus2_name"],
-                parameters["template_line"],
-                parameters["length_km"],
-                grid_name,
-                out_of_service,
-                open_digsilent,
-            )
-
-        return cls.add_transformer(
-            component_name,
-            parameters["high_voltage_bus_name"],
-            parameters["low_voltage_bus_name"],
-            parameters["template_transformer"],
-            grid_name,
-            out_of_service,
-            open_digsilent,
-        )
+        except Exception as exc:
+            message = str(exc)
+            log.error(f"{kind.capitalize()} creation failed: {message}")
+            return False, message
 
     @classmethod
     def delete_component(

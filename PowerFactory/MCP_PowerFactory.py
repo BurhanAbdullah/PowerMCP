@@ -15,11 +15,8 @@ Tools
   import_project    Import a .pfd file and activate it in PowerFactory.
   create_study_case Create/activate a study case by name (no simulation run).
   modify_parameter  Modify an object attribute by object query + variable name.
-  add_bus           Create and verify a bus in an active grid.
-  add_load          Create and connect a load to an existing bus.
-  add_generator     Create a typed synchronous generator on an existing bus.
-  add_line          Create a typed line between two existing buses.
-  add_transformer   Create a typed two-winding transformer between buses.
+  add_component     Create a bus, load, generator, line, or transformer.
+  delete_component  Preview or delete an exactly named grid component.
   run_loadflow      Run a load flow calculation (ComLdf) on the active study case.
   run_short_circuit Run a short-circuit calculation (ComShc) on the active study case.
   run_simulation    Run the full pipeline from simulation_config.json.
@@ -300,121 +297,6 @@ def modify_parameter(
     _, DIgSILENTAgent = _load_modules()
     ok, msg = _pf(DIgSILENTAgent.modify_parameter, object_name, variable, new_value, open_digsilent)
     return json.dumps({"success": ok, "message": msg})
-
-
-@mcp.tool()
-def add_bus(
-    bus_name: str,
-    nominal_voltage_kv: float,
-    grid_name: str = "",
-    out_of_service: bool = False,
-    open_digsilent: bool = True,
-) -> str:
-    """Create and verify a bus, rolling it back if setup fails."""
-    return _agent_result(
-        "add_bus",
-        bus_name,
-        nominal_voltage_kv,
-        grid_name,
-        out_of_service,
-        open_digsilent,
-    )
-
-
-@mcp.tool()
-def add_load(
-    load_name: str,
-    bus_name: str,
-    active_power_mw: float,
-    reactive_power_mvar: float = 0.0,
-    grid_name: str = "",
-    out_of_service: bool = False,
-    open_digsilent: bool = True,
-) -> str:
-    """Create and connect a load, rolling it back if setup fails."""
-    return _agent_result(
-        "add_load",
-        load_name,
-        bus_name,
-        active_power_mw,
-        reactive_power_mvar,
-        grid_name,
-        out_of_service,
-        open_digsilent,
-    )
-
-
-@mcp.tool()
-def add_generator(
-    generator_name: str,
-    bus_name: str,
-    template_generator: str,
-    active_power_mw: float,
-    reactive_power_mvar: float = 0.0,
-    grid_name: str = "",
-    out_of_service: bool = False,
-    open_digsilent: bool = True,
-) -> str:
-    """Create a typed generator, rolling it back if setup fails."""
-    return _agent_result(
-        "add_generator",
-        generator_name,
-        bus_name,
-        template_generator,
-        active_power_mw,
-        reactive_power_mvar,
-        grid_name,
-        out_of_service,
-        open_digsilent,
-    )
-
-
-@mcp.tool()
-def add_line(
-    line_name: str,
-    bus1_name: str,
-    bus2_name: str,
-    template_line: str,
-    length_km: float,
-    grid_name: str = "",
-    out_of_service: bool = False,
-    open_digsilent: bool = True,
-) -> str:
-    """Create a typed line, rolling it back if setup fails."""
-    return _agent_result(
-        "add_line",
-        line_name,
-        bus1_name,
-        bus2_name,
-        template_line,
-        length_km,
-        grid_name,
-        out_of_service,
-        open_digsilent,
-    )
-
-
-@mcp.tool()
-def add_transformer(
-    transformer_name: str,
-    high_voltage_bus_name: str,
-    low_voltage_bus_name: str,
-    template_transformer: str,
-    grid_name: str = "",
-    out_of_service: bool = False,
-    open_digsilent: bool = True,
-) -> str:
-    """Create a typed transformer, rolling it back if setup fails."""
-    return _agent_result(
-        "add_transformer",
-        transformer_name,
-        high_voltage_bus_name,
-        low_voltage_bus_name,
-        template_transformer,
-        grid_name,
-        out_of_service,
-        open_digsilent,
-    )
 
 
 @mcp.tool()
