@@ -77,7 +77,7 @@ The base install includes the open-source engines that need no extra setup — *
 ```bash
 pip install powermcp[psse]              # add PSS/E support
 pip install powermcp[andes,opendss]     # add several tools at once
-pip install powermcp[opensource]        # all open-source tools (ANDES, Egret, OpenDSS, surge, HOPE, LTSpice)
+pip install powermcp[opensource]        # all open-source tools (ANDES, Egret, OpenDSS, surge, HOPE, LTSpice, GenX)
 pip install powermcp[all]               # everything (closed-source tools still need the local software)
 ```
 
@@ -119,6 +119,7 @@ These tools wrap commercial or locally-installed software, so PowerMCP stores th
 | PowerFactory | `powerfactory.python_path` | `powermcp config set powerfactory.python_path "...\DIgSILENT\PowerFactory 2024\Python\3.11"` |
 | LTSpice | `ltspice.exe` *(auto-detected)* | Found automatically in standard locations — usually no setup needed. Override: `powermcp config set ltspice.exe "C:\Program Files\ADI\LTspice\LTspice.exe"` |
 | HOPE | `hope.repo_root`, `hope.julia_bin` | `powermcp config set hope.repo_root "C:\src\HOPE"` |
+| GenX | `genx.repo_root` | `powermcp config set genx.repo_root "/home/me/GenX.jl"` — the GenX.jl checkout; `GENX_DIR` overrides it |
 | PowerWorld | *(none)* | `esa` auto-discovers a running, licensed Simulator via COM; the `powerworld` extra also installs `numba` (required by esa) |
 | PSCAD | *(none)* | `pip install powermcp[pscad-windows]` provides `mhi-pscad`; PSCAD must be installed |
 

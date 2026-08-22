@@ -1,0 +1,5 @@
+# Standalone install for running GenX/server.py straight from a clone.
+# `pip install "powermcp[genx]"` covers the same ground.
+mcp>=2,<3
+pandas>=2.0,<3
+matplotlib>=3.7

@@ -135,6 +135,16 @@ TOOLS: dict[str, "Tool"] = {
             ),
             external_solvers=("Julia",),
         ),
+        Tool(
+            "genx", "GenX", "open-source", windows_only=False, extra="genx",
+            server_dir="GenX", run_kind="script", entry_rel="server.py",
+            probe="matplotlib",
+            config_keys=(
+                ConfigKey("repo_root", "Path to the GenX.jl repository root", "dir"),
+            ),
+            external_solvers=("Julia", "Gurobi", "HiGHS"),
+            notes="Capacity-expansion analysis over completed GenX runs, plus SLURM job submission. Needs a GenX.jl checkout; case submission needs sbatch on PATH.",
+        ),
         # powerio ships its own MCP server, so this repo runs that one rather
         # than vendoring a copy that has to restate powerio's tool names.
         Tool(

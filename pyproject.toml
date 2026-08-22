@@ -70,6 +70,11 @@ opendss    = ["py_dss_toolkit"]
 ltspice    = ["PyLTSpice", "matplotlib"]
 surge      = ["surge-py>=0.1.5; python_version >= '3.12' and python_version < '3.15'"]
 hope       = ["PyYAML>=6.0"]
+# GenX itself is Julia (GenX.jl) and is not pip-installable; the extra covers
+# only the Python-side analysis this connector does. matplotlib and pandas
+# already arrive with the core install via pandapower, so the extra exists to
+# make the dependency explicit rather than to add anything new.
+genx       = ["matplotlib>=3.7", "pandas>=2.0,<3"]
 # powerio moved to core `dependencies`; the extra is gone (a bare
 # `pip install powermcp` now always provides the conversion server).
 # --- closed-source / vendor tool engines ---
@@ -98,7 +103,7 @@ powerfactory = ["numpy>=1.26", "matplotlib>=3.8", "pandas>=1.5"]  # vendor `powe
 # powermcp[plexosdb]` until that's resolved upstream.
 plexosdb   = ["r2x-plexos>=0.3.0", "r2x-plexos-to-sienna>=0.1.0", "r2x-sienna>=0.4.0"]
 # --- convenience groups ---
-opensource = ["powermcp[andes]", "powermcp[egret]", "powermcp[opendss]", "powermcp[ltspice]", "powermcp[surge]", "powermcp[hope]"]
+opensource = ["powermcp[andes]", "powermcp[egret]", "powermcp[opendss]", "powermcp[ltspice]", "powermcp[surge]", "powermcp[hope]", "powermcp[genx]"]
 windows    = ["powermcp[pscad-windows]", "powermcp[powerworld]", "powermcp[powerfactory]", "powermcp[psse]", "powermcp[pslf]"]
 all        = ["powermcp[opensource]", "powermcp[powerworld]", "powermcp[powerfactory]", "powermcp[pscad-windows]", "powermcp[psse]", "powermcp[pslf]", "powermcp[plexosdb]"]
 
@@ -125,6 +130,7 @@ packages = ["powermcp"]
 "surge"        = "powermcp/_servers/surge"
 "OpenDSS"      = "powermcp/_servers/OpenDSS"
 "HOPE"         = "powermcp/_servers/HOPE"
+"GenX"         = "powermcp/_servers/GenX"
 "PSCAD"        = "powermcp/_servers/PSCAD"
 "PSSE"         = "powermcp/_servers/PSSE"
 "PSLF"         = "powermcp/_servers/PSLF"
@@ -140,6 +146,7 @@ include = [
     "powermcp",
     "pandapower", "PyPSA", "ANDES", "Egret", "surge", "OpenDSS", "HOPE",
     "PSCAD", "PSSE", "PSLF", "PowerWorld", "PowerFactory", "LTSpice", "PLEXOSDB",
+    "GenX",
     "README.md", "LICENSE", "pyproject.toml",
 ]
 exclude = [
