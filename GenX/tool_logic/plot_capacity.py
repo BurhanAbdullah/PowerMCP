@@ -1,8 +1,9 @@
 # Imports
-import re
 from pathlib import Path
 
 import pandas as pd
+import matplotlib
+matplotlib.use("Agg")  # no display on a cluster login node
 import matplotlib.pyplot as plt
 
 from GenX.tool_logic.palette import RESOURCE_COLORS
@@ -105,8 +106,11 @@ def load_capacity_csv(csv_path: str | Path) -> pd.DataFrame:
     required_cols = {"Resource", "StartCap", "RetCap", "NewCap", "EndCap"}
     missing = required_cols - set(df.columns)
     if missing:
-        print("Error: Missing required columns in capacity CSV:", missing)
-    
+        raise ValueError(
+            f"Missing required column(s) in capacity CSV {csv_path}: "
+            f"{sorted(missing)}. Found: {sorted(df.columns)}"
+        )
+
     df["resource_group"] = df["Resource"].apply(classify_resource)
 
     for col in ["StartCap", "RetCap", "NewCap", "EndCap"]:
@@ -164,7 +168,7 @@ def plot_capacity_bar(
     df: pd.DataFrame,
     capacity_column: str,
     output_path: str | Path,
-    title: str = None
+    title: str | None = None
 ) -> dict:
     """
     Create a bar chart of capacity by resource type.

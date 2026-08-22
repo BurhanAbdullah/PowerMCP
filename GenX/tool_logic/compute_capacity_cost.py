@@ -31,22 +31,32 @@ def resolve_scenario(scenario_path: str, period: int = 1, marker: str | None = N
 
     # i.e. ~/my/path/case_A expands
     expanded = os.path.expanduser(scenario_path)
-    genx_dir = os.environ.get("GENX_DIR")
 
     # Starts the candidate list for absolute filepaths.
     # If the path starts with `/` -> use directly
     candidates = [expanded] if os.path.isabs(expanded) else [os.path.abspath(expanded)]
-    
-    # Accomodates non absolute file path
-    if genx_dir and not os.path.isabs(expanded):
-        candidates.insert(0, os.path.join(genx_dir, expanded))
+
+    # Accomodates non absolute file path. GenX may not be configured at all --
+    # a relative path resolved against the cwd is still worth trying.
+    if not os.path.isabs(expanded):
+        try:
+            from GenX.tool_logic.slurm import genx_dir
+
+            candidates.insert(0, os.path.join(genx_dir(), expanded))
+        except Exception:
+            pass
 
     # `candidates` are the list of absolute paths 
     # Checks if the given file (ex: `ReserveMargin_w` or `power.csv` exists)
+    from GenX.tool_logic.slurm import _contained
+
     for cand in candidates:
         if os.path.isfile(os.path.join(cand, marker)):
-            return cand
-    return candidates[0]
+            return _contained(os.path.abspath(cand), "scenario_path")
+    # Nothing matched. Return the best candidate so the caller's own
+    # missing-file check can name it; contain it first, since it is still a
+    # model-supplied path that downstream code will try to open.
+    return _contained(os.path.abspath(candidates[0]), "scenario_path")
 
 
 def compute_capacity_cost(
@@ -88,10 +98,17 @@ def compute_capacity_cost(
     weights          = dem_in["Sub_Weights"].dropna().values
     hourly_weights   = np.array([w / hours_per_period for w in weights for _ in range(hours_per_period)])
 
+    available_regions = sorted(
+        int(c.split("_")[1]) for c in resmar.columns if c.startswith("CapRes_")
+    )
     if capres_regions is None:
-        capres_regions = sorted(
-            int(c.split("_")[1]) for c in resmar.columns if c.startswith("CapRes_")
-        )
+        capres_regions = available_regions
+    else:
+        unknown = sorted(set(capres_regions) - set(available_regions))
+        if unknown:
+            return {"success": False,
+                    "message": f"Invalid CapRes region(s) {unknown}. "
+                               f"Available regions: {available_regions}"}
 
     total_cost = 0.0
     for capres_num in capres_regions:
@@ -123,6 +140,11 @@ def compute_capacity_cost(
         denom_zones = sorted(zones)
 
     peak_demand = dem_in[[f"Demand_MW_z{z}" for z in denom_zones]].sum(axis=1).values.max()
+    if peak_demand <= 0:
+        return {"success": False,
+                "message": f"Peak demand across zone(s) {denom_zones} is "
+                           f"{peak_demand}; a capacity price cannot be "
+                           f"computed against zero demand."}
     price_annual = total_cost / peak_demand
     price_day    = price_annual / 365
 

@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "genx_agent": {
-      "command": "/ABSOLUTE/PATH/TO/.venv/bin/python",
-      "args": ["/ABSOLUTE/PATH/TO/genx_agent/server.py"]
-    }
-  }
-}

@@ -43,6 +43,7 @@ pip install "powermcp[all]"             # everything
 | `opendss` | OpenDSS | |
 | `surge` | surge | **Python 3.12–3.14 only** |
 | `hope` | HOPE | + needs Julia at runtime |
+| `genx` | GenX | + needs a GenX.jl checkout; case submission needs SLURM `sbatch` |
 | `ltspice` | LTSpice | executable **auto-detected** (override with `ltspice.exe`) |
 | `powerworld` | PowerWorld | needs licensed Simulator (COM); extra also installs `numba` (required by esa 1.3.5) |
 | `psse`, `pslf`, `powerfactory` | PSS/E, PSLF, PowerFactory | engine loaded from a configured local path |

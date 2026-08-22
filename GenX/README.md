@@ -70,66 +70,68 @@ Below is the computation calling this skill executes.
 ## Setup
 
 Requires Python ≥ 3.10 and (for submission) a SLURM cluster with `sbatch` on
-`PATH` plus a local GenX.jl checkout.
+`PATH` plus a local GenX.jl checkout. GenX itself is Julia; this connector
+reads the CSVs a completed run produces and submits new ones.
 
 ```bash
-git clone <this-repo> genx_agent
-cd genx_agent
-
-# install dependencies
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-
-# configure your environment
-cp .env.example .env
-#   then edit .env — at minimum set GENX_DIR
+pip install "powermcp[genx]"
+powermcp config set genx.repo_root /path/to/GenX.jl
+powermcp run genx
 ```
 
-### Configuration (`.env`)
+Or run it from a clone without installing:
 
-All personal/cluster-specific settings come from environment variables, loaded
-from `.env` at startup. **`.env` is gitignored — never commit it.** `.env.example`
-is the public template; copy it and fill in your own values.
+```bash
+python GenX/server.py
+```
+
+### Configuration
+
+The GenX.jl checkout is resolved at call time, in this order:
+
+1. the `GENX_DIR` environment variable, then
+2. `genx.repo_root` in `~/.powermcp/config.toml`, set by `powermcp install` or
+   `powermcp config set genx.repo_root <path>`.
+
+Nothing is read at import, so the server always starts; a tool that needs the
+setting reports the three ways to supply it when it is called.
+
+Cluster specifics stay environment variables, since they belong to the machine
+the server runs on rather than to the user:
 
 | Variable | Required | Default | Notes |
 |---|---|---|---|
-| `GENX_DIR` | **yes** | — | Absolute path to your GenX.jl checkout. Server won't start if unset. |
+| `GENX_DIR` | see above | — | Absolute path to your GenX.jl checkout. Overrides `genx.repo_root`. |
+| `SLURM_PARTITION` | no | `all` | SLURM partition to submit to. |
 | `SLURM_CPUS_DEFAULT` | no | `4` | CPUs per task when the caller doesn't specify. |
-| `SLURM_MAIL_USER` | no | _(none)_ | Email for job notifications. Blank → no mail directives. |
+| `SLURM_MAIL_USER` | no | _(none)_ | Email for job notifications. Unset → no mail directives. |
 | `GENX_LOG_DIR` | no | `<GENX_DIR>/run_logs` | Where `.out`/`.err` logs go. |
-| `JULIA_MODULE` | no | _(none)_ | e.g. `julia/1.10.5`. Blank → no `module load`. |
-| `GUROBI_MODULE` | no | _(none)_ | e.g. `gurobi/9.0.1`. Blank → no `module load`. |
+| `JULIA_MODULE` | no | _(none)_ | e.g. `julia/1.10.5`. Unset → no `module load`. |
+| `GUROBI_MODULE` | no | _(none)_ | e.g. `gurobi/9.0.1`. Unset → no `module load`. |
 | `JULIA_CPU_TARGET` | no | _(none)_ | Optional multi-arch build target. |
 
 Run `module avail` on your cluster to find the correct module names.
 
-## Establish Claude Code Connection
+### Establish an MCP client connection
 
-> Use **absolute paths** for both the Python interpreter and `server.py`.
-
-### Claude Code
-
-Register the server (run on the cluster, from any directory):
+`powermcp install` writes the client configuration for Claude Desktop, Claude
+Code, and the Codex CLI. To register it by hand instead:
 
 ```bash
-claude mcp add genx_agent -- /ABSOLUTE/PATH/TO/.venv/bin/python /ABSOLUTE/PATH/TO/genx_agent/server.py
+claude mcp add genx -- powermcp run genx
 ```
 
-Or copy `.mcp.json.example` to `.mcp.json` and edit the paths:
+Then run `/mcp` inside Claude Code to verify it connected.
 
-```json
-{
-  "mcpServers": {
-    "genx_agent": {
-      "command": "/ABSOLUTE/PATH/TO/.venv/bin/python",
-      "args": ["/ABSOLUTE/PATH/TO/genx_agent/server.py"]
-    }
-  }
-}
-```
+## Path containment
 
-Then run `/mcp` inside Claude Code to verify it connected. Reconnect whenever you
-edit the server code.
+Every path a tool accepts is model-supplied input, so each one goes through
+the shared PowerIO sandbox before anything opens it — see the security notes
+in the [root README](../README.md). `case_dir` and `scenario_path` are checked
+after resolution, since either may be given relative to the GenX directory.
+Job names are restricted to `[A-Za-z0-9._-]` and every value interpolated into
+a generated SLURM script is shell-quoted: the script is piped to `sbatch` and
+runs on the cluster under your own account.
 
 ## Usage
 

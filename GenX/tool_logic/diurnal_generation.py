@@ -6,6 +6,7 @@ model hour by its TDR time weight (results_pN/time_weights.csv).
 Performs computation for each aggregated resource type.
 """
 import argparse
+import logging
 import os
 
 import numpy as np
@@ -16,6 +17,8 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
 
 from GenX.tool_logic.palette import RESOURCE_COLORS
+
+logger = logging.getLogger(__name__)
 
 # Stack order, bottom -> top.
 # DR is shed load (not generation) so it sits on top as a hatched band.
@@ -93,10 +96,10 @@ def diurnal_by_tech(case_dir, period, zones="all", verbose=False):
     if verbose:
         for g in STACK_ORDER:
             if g in groups:
-                print(f"  {g:8s} <- {len(groups[g])} resources")
+                logger.info("  %-8s <- %d resources", g, len(groups[g]))
         if "Other" in groups:
             techs = sorted({c.split("_", 1)[-1] for c in groups["Other"]})
-            print(f"  Other contains: {techs}")
+            logger.info("  Other contains: %s", techs)
 
     hod = np.arange(T) % 24                      # t1 -> hour 0; 168 % 24 == 0 so
     wsum = np.bincount(hod, weights, minlength=24) # every rep week aligns
@@ -158,7 +161,7 @@ def plot_comparison(orig_df, dr_df, labels, title, out_png):
     fig.subplots_adjust(left=0.08, right=0.89, top=0.84, bottom=0.13, wspace=0.08)
     fig.savefig(out_png, dpi=180)
     plt.close(fig)
-    print(f"wrote {out_png}")
+    logger.info("wrote %s", out_png)
 
 
 def plot_difference(orig_df, dr_df, labels, title, out_png):
@@ -196,7 +199,7 @@ def plot_difference(orig_df, dr_df, labels, title, out_png):
     fig.subplots_adjust(left=0.1, right=0.82, top=0.9, bottom=0.12)
     fig.savefig(out_png, dpi=180)
     plt.close(fig)
-    print(f"wrote {out_png}")
+    logger.info("wrote %s", out_png)
 
 
 def main():
@@ -212,9 +215,14 @@ def main():
                    help="plot (dr - orig) difference by tech instead of side-by-side stacks")
     args = p.parse_args()
 
-    print(f"[orig] {args.orig}")
+    # Standalone CLI use: surface the logger output this module emits. When
+    # imported by the MCP server instead, the server owns logging config and
+    # nothing here touches stdout.
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+
+    logger.info("[orig] %s", args.orig)
     orig = diurnal_by_tech(args.orig, args.period, args.zones, verbose=True)
-    print(f"[dr]   {args.dr}")
+    logger.info("[dr]   %s", args.dr)
     dr = diurnal_by_tech(args.dr, args.period, args.zones, verbose=True)
 
     zone_lbl = "all zones" if args.zones == "all" else f"zones {args.zones}"

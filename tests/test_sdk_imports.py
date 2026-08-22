@@ -23,6 +23,7 @@ REPO = pathlib.Path(__file__).resolve().parent.parent
 SERVER_DIRS = (
     "ANDES",
     "Egret",
+    "GenX",
     "HOPE",
     "LTSpice",
     "OpenDSS",
