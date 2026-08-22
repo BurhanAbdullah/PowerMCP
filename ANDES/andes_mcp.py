@@ -5,6 +5,7 @@ import io
 import sys
 import shutil
 import json
+from math import pi
 from pathlib import Path
 from contextlib import redirect_stdout, redirect_stderr
 from mcp.server.mcpserver import MCPServer as FastMCP
@@ -52,6 +53,24 @@ def _prepare_run_dir(name: str, purpose: str) -> str:
     os.makedirs(run_dir, exist_ok=True)
     return checked_read_tree(run_dir, purpose=purpose)
 
+# ANDES groups its dynamic generator models by technology: SynGen holds the
+# synchronous machines, RenGen and DG the inverter-based resources. A case can
+# carry dynamics in any of them, so "does this system have dynamics?" has to
+# look past SynGen alone.
+_DYNAMIC_GENERATOR_GROUPS = ("SynGen", "RenGen", "DG")
+
+
+def _count_dynamic_generators(ss) -> int:
+    """Number of dynamic generator models attached to a loaded system."""
+    groups = getattr(ss, "groups", None)
+    if not groups:
+        return 0
+    return sum(
+        int(getattr(groups.get(name), "n", 0) or 0)
+        for name in _DYNAMIC_GENERATOR_GROUPS
+    )
+
+
 # Configure logging (stream only at import; file handler attached lazily)
 logging.basicConfig(
     level=logging.INFO,
@@ -95,17 +114,24 @@ mcp = FastMCP("ANDES MCP Server")
 system_state: Dict[str, Any] = {}
 
 @mcp.tool()
-def run_power_flow(file_path: str) -> Dict[str, Any]:
+def run_power_flow(file_path: str, dyr_path: Optional[str] = None) -> Dict[str, Any]:
     """Run power flow analysis on a power system case
-    
+
     Args:
         file_path: Path to the case file
-    
+        dyr_path: Optional path to a PSS/E .dyr dynamic-model file (generators,
+            exciters, governors) to attach to a PSS/E .raw case. When given,
+            it is loaded alongside file_path via ANDES's addfile mechanism,
+            enabling run_time_domain_simulation/run_eigenvalue_analysis to
+            operate on real dynamics instead of static topology only.
+
     Returns:
         Dict containing power flow results and output information
     """
     try:
         file_path = checked_path(file_path, purpose="file_path")
+        if dyr_path is not None:
+            dyr_path = checked_path(dyr_path, purpose="dyr_path")
     except PathNotAllowed as exc:
         return {"status": "error", "message": str(exc)}
     try:
@@ -118,12 +144,23 @@ def run_power_flow(file_path: str) -> Dict[str, Any]:
                 "message": f"Input file not found: {abs_file_path}"
             }
 
+        # Resolve and validate the optional .dyr file before any run-dir/chdir
+        # work happens, same pattern as the main input file check above.
+        abs_dyr_path = None
+        if dyr_path is not None:
+            abs_dyr_path = os.path.abspath(dyr_path)
+            if not os.path.exists(abs_dyr_path):
+                return {
+                    "status": "error",
+                    "message": f"Dynamic model file not found: {abs_dyr_path}"
+                }
+
         # Create a unique directory for this run
         run_dir = _prepare_run_dir(
             f"pf_{Path(abs_file_path).stem}",
             "generated power flow output directory",
         )
-        
+
         # Copy input file to run directory
         input_file = checked_path(
             os.path.join(run_dir, os.path.basename(abs_file_path)),
@@ -131,29 +168,55 @@ def run_power_flow(file_path: str) -> Dict[str, Any]:
             for_write=True,
         )
         shutil.copy2(abs_file_path, input_file)
-        
+
+        # Copy the .dyr file into run_dir alongside the main input, and use
+        # the copied path as addfile -- keeps everything this run touched
+        # under output_dir.
+        dyr_file = None
+        if abs_dyr_path is not None:
+            dyr_file = checked_path(
+                os.path.join(run_dir, os.path.basename(abs_dyr_path)),
+                purpose="generated ANDES dynamic model copy",
+                for_write=True,
+            )
+            shutil.copy2(abs_dyr_path, dyr_file)
+
         # Save current directory and change to run directory
         original_dir = os.getcwd()
         os.chdir(run_dir)
-        
+
         try:
             # Capture stdout/stderr
             f_out = io.StringIO()
             f_err = io.StringIO()
-            
+
             with redirect_stdout(f_out), redirect_stderr(f_err):
-                # Run power flow with minimal output
-                ss = andes.run(input_file, no_output=True, verbose=50)
-                
+                # Run power flow with minimal output. addfile is only passed
+                # when a .dyr was supplied, so the no-dyr call path is
+                # byte-identical to before.
+                run_kwargs = {"no_output": True, "verbose": 50}
+                if dyr_file is not None:
+                    run_kwargs["addfile"] = dyr_file
+                ss = andes.run(input_file, **run_kwargs)
+
                 # Store system state for other tools
                 system_state['current_system'] = ss
-                
+
+                # Count what actually attached rather than trusting the
+                # argument: ANDES's PSS/E dyr parser silently skips model
+                # types it does not support, so a supplied .dyr can leave the
+                # system with no dynamics at all. SynGen covers synchronous
+                # machines, RenGen and DG the inverter-based resources.
+                n_dyn_gen = _count_dynamic_generators(ss)
+
                 # Extract key power flow results
                 pflow_results = {
                     "converged": ss.PFlow.converged,
                     "iterations": ss.PFlow.niter if hasattr(ss.PFlow, 'niter') else 0,
                     "max_mis": float(ss.PFlow.mis[-1]) if hasattr(ss.PFlow, 'mis') and len(ss.PFlow.mis) > 0 else 0.0,
-                    "time": float(ss.PFlow.t) if hasattr(ss.PFlow, 't') else 0.0
+                    "time": float(ss.PFlow.t) if hasattr(ss.PFlow, 't') else 0.0,
+                    "dynamic_models_loaded": n_dyn_gen > 0,
+                    "n_dynamic_generators": n_dyn_gen,
                 }
                 
                 # Get list of output files
@@ -309,15 +372,50 @@ def run_eigenvalue_analysis(file_path: str) -> Dict[str, Any]:
                 
                 # Run eigenvalue analysis
                 success = ss.EIG.run()
-                
-                # Extract eigenvalue results
+
+                # Extract eigenvalue results. ss.EIG.mu holds the eigenvalues
+                # (complex array); frequency and damping ratio are derived
+                # from mu using the same formula ANDES's own EIG.post_process()
+                # uses internally for its text report:
+                #   freq_hz = |Im(mu)| / (2*pi)
+                #   damping_pct = -100 * Re(mu) / |mu|
+                # That damping formula applies to every mode, real ones
+                # included: a real eigenvalue yields -100% or +100%, and the
+                # negative case is monotonic instability -- the most serious
+                # small-signal result there is. Reporting 0% for it would
+                # bury it mid-list once the modes are sorted.
+                eigenvalues = ss.EIG.mu
+                modes = []
+                for index, mu in enumerate(eigenvalues):
+                    magnitude = abs(mu)
+                    freq_hz = abs(mu.imag) / (2 * pi) if mu.imag else 0.0
+                    # A mode at the origin has no defined damping ratio.
+                    damping_pct = -100.0 * mu.real / magnitude if magnitude else 0.0
+                    modes.append({
+                        # ANDES's native position for this eigenvalue. The
+                        # list below is re-sorted, but participation_factors
+                        # and state_names keep this ordering, so the index is
+                        # what ties a mode back to its participation column.
+                        "index": index,
+                        "eigenvalue": [float(mu.real), float(mu.imag)],
+                        "frequency_hz": float(freq_hz),
+                        "damping_ratio_pct": float(damping_pct),
+                        "is_oscillatory": bool(mu.imag != 0),
+                    })
+                modes.sort(key=lambda m: m["damping_ratio_pct"])  # least-damped (most concerning) first
+
                 eig_results = {
-                    "n_eigenvalues": len(ss.EIG.mu) if hasattr(ss.EIG, 'mu') else 0,
-                    "eigenvalues": ss.EIG.mu.tolist() if hasattr(ss.EIG, 'mu') else [],
-                    "eigenvectors": ss.EIG.vectors.tolist() if hasattr(ss.EIG, 'vectors') else [],
-                    "participation_factors": ss.EIG.pfactors.tolist() if hasattr(ss.EIG, 'pfactors') else [],
-                    "state_variables": ss.EIG.state_desc if hasattr(ss.EIG, 'state_desc') else [],
-                    "success": success
+                    "n_modes": len(modes),
+                    "modes": modes,
+                    "participation_factors": ss.EIG.pfactors.tolist() if getattr(ss.EIG, "pfactors", None) is not None else [],
+                    "state_names": list(ss.EIG.x_name) if getattr(ss.EIG, "x_name", None) is not None else [],
+                    "success": success,
+                    # Retained from the pre-0.3.0 shape so existing callers
+                    # keep working. `eigenvectors`/`state_variables` are gone
+                    # for good: they read attributes the EIG routine has never
+                    # had, so they only ever returned [].
+                    "n_eigenvalues": len(modes),
+                    "eigenvalues": eigenvalues.tolist(),
                 }
                 
                 # Get list of output files
