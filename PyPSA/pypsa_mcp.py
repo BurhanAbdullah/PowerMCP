@@ -1,11 +1,29 @@
 import sys
 import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from mcp.server.fastmcp import FastMCP
+import inspect
+import tempfile
+from mcp.server.mcpserver import MCPServer as FastMCP
 from pypsa import Network
 import numpy as np
 import pandas as pd
 from typing import Dict, List, Optional, Union, Any
+
+_repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_repo_root_added = _repo_root not in sys.path
+if _repo_root_added:
+    sys.path.insert(0, _repo_root)
+try:
+    from powermcp.solver_case import resolve_solver_case
+    from powermcp.sandbox import (
+        PathNotAllowed,
+        checked_path,
+        checked_read_tree,
+        staged_directory_write,
+    )
+finally:
+    if _repo_root_added:
+        sys.path.remove(_repo_root)
+del _repo_root, _repo_root_added
 
 
 def _to_serializable(obj: Any) -> Any:
@@ -29,11 +47,30 @@ def _to_serializable(obj: Any) -> Any:
 mcp = FastMCP("PyPSA-MCP")
 
 
+def _checked_network_source(value: str, *, purpose: str) -> str:
+    """Preflight a NetCDF file or every descendant of a CSV directory."""
+    return checked_read_tree(value, purpose=purpose)
+
+
+def _optimize(network: Network, **kwargs):
+    """Call the modern optimizer with stable semantics across supported PyPSA.
+
+    ``include_objective_constant`` is not present throughout the supported
+    pre-2 range, and PyPSA plans to change its default in 2.0. Pass today's
+    behavior explicitly whenever the installed accessor supports it.
+    """
+    parameters = inspect.signature(network.optimize.__call__).parameters
+    if "include_objective_constant" in parameters:
+        kwargs["include_objective_constant"] = True
+    return network.optimize(**kwargs)
+
+
 # ============= Network Information =============
 
 @mcp.tool()
 def get_network_info(network_name: str) -> Dict[str, Any]:
     """Get basic information about the network"""
+    network_name = _checked_network_source(network_name, purpose="network_name")
     network = Network(network_name)
     info = {
         "buses": len(network.buses),
@@ -50,6 +87,10 @@ def get_network_info(network_name: str) -> Dict[str, Any]:
 @mcp.tool()
 def load_network(file_path: str) -> Dict[str, Any]:
     """Load a PyPSA network from a NetCDF (.nc) file"""
+    try:
+        file_path = _checked_network_source(file_path, purpose="file_path")
+    except PathNotAllowed as exc:
+        return {"status": "error", "message": str(exc)}
     try:
         network = Network(file_path)
         info = {
@@ -75,6 +116,7 @@ def load_network(file_path: str) -> Dict[str, Any]:
 def run_power_flow(network_name: str, linear: bool = False) -> Dict[str, Any]:
     """Run a non-linear (AC) or linear (DC) power flow on the network"""
     try:
+        network_name = _checked_network_source(network_name, purpose="network_name")
         network = Network(network_name)
         
         if linear:
@@ -128,6 +170,7 @@ def run_contingency_analysis(
     """
     try:
         # --- Base case ---
+        network_name = _checked_network_source(network_name, purpose="network_name")
         network = Network(network_name)
         network.pf(use_seed=True)
 
@@ -258,6 +301,7 @@ def get_component_details(
     component_id: Optional[str] = None
 ) -> Dict[str, Any]:
     """Get detailed information about a specific component or all components of a type"""
+    network_name = _checked_network_source(network_name, purpose="network_name")
     network = Network(network_name)
     
     if not hasattr(network, component_type):
@@ -289,13 +333,18 @@ def create_network(
     crs: str = "EPSG:4326"
 ) -> Dict[str, Any]:
     """Create a new PyPSA network"""
-    if snapshots:
-        snapshots = pd.DatetimeIndex(snapshots)
-    network = Network(name=name, snapshots=snapshots, crs=crs)
-    network.export_to_netcdf(f"{name}.nc")
+    network_kwargs: Dict[str, Any] = {"name": name, "crs": crs}
+    if snapshots is not None:
+        network_kwargs["snapshots"] = pd.DatetimeIndex(snapshots)
+    network = Network(**network_kwargs)
+    output_path = checked_path(
+        f"{name}.nc", purpose="generated network path", for_write=True
+    )
+    network.export_to_netcdf(output_path)
     return {
         "status": "success",
-        "message": f"Network '{name}' created and saved to {name}.nc"
+        "message": f"Network '{name}' created and saved to {output_path}",
+        "network_file": output_path,
     }
 
 @mcp.tool()
@@ -308,6 +357,7 @@ def add_bus(
     carrier: str = "AC"
 ) -> Dict[str, Any]:
     """Add a bus to the network"""
+    network_name = _checked_network_source(network_name, purpose="network_name")
     network = Network(network_name)
     network.add("Bus", bus_id, v_nom=v_nom, x=x, y=y, carrier=carrier)
     network.export_to_netcdf(network_name)
@@ -328,6 +378,7 @@ def add_generator(
     p_max_pu: float = 1.0
 ) -> Dict[str, Any]:
     """Add a generator to the network"""
+    network_name = _checked_network_source(network_name, purpose="network_name")
     network = Network(network_name)
     network.add(
         "Generator",
@@ -353,6 +404,7 @@ def add_load(
     p_set: float
 ) -> Dict[str, Any]:
     """Add a load to the network"""
+    network_name = _checked_network_source(network_name, purpose="network_name")
     network = Network(network_name)
     network.add("Load", load_id, bus=bus, p_set=p_set)
     network.export_to_netcdf(network_name)
@@ -373,6 +425,7 @@ def add_line(
     length: float = 1.0
 ) -> Dict[str, Any]:
     """Add a transmission line to the network"""
+    network_name = _checked_network_source(network_name, purpose="network_name")
     network = Network(network_name)
     network.add(
         "Line",
@@ -402,6 +455,7 @@ def add_storage_unit(
     cyclic_state_of_charge: bool = True
 ) -> Dict[str, Any]:
     """Add a storage unit to the network"""
+    network_name = _checked_network_source(network_name, purpose="network_name")
     network = Network(network_name)
     network.add(
         "StorageUnit",
@@ -429,19 +483,55 @@ def optimize_network(
     pyomo: bool = False,
     solver_options: Optional[Dict] = None
 ) -> Dict[str, Any]:
-    """Run a linear optimal power flow (LOPF) on the network"""
+    """Run a linear optimal power flow on the network.
+
+    Modern PyPSA uses its Linopy-backed ``Network.optimize`` accessor.  The
+    legacy ``formulation`` and ``pyomo`` arguments remain in the MCP schema so
+    existing clients do not break, but only PyPSA's current Kirchhoff/Linopy
+    path is available.
+    """
+    network_name = _checked_network_source(network_name, purpose="network_name")
+    if formulation != "kirchhoff":
+        return {
+            "status": "error",
+            "message": (
+                "Modern PyPSA supports the 'kirchhoff' formulation through "
+                "Network.optimize; other legacy LOPF formulations are unavailable."
+            ),
+        }
+    if pyomo:
+        return {
+            "status": "error",
+            "message": (
+                "Modern PyPSA no longer provides the legacy Pyomo LOPF backend; "
+                "use the default Linopy optimizer (pyomo=false)."
+            ),
+        }
+
     network = Network(network_name)
-    
+
     try:
-        status = network.lopf(
-                    solver_name=solver_name,
-                    pyomo=pyomo,
-                    solver_options=solver_options or {}
-                )
+        status, termination_condition = _optimize(
+            network,
+            solver_name=solver_name,
+            solver_options=solver_options or {},
+        )
+
+        if status != "ok":
+            return {
+                "status": status,
+                "termination_condition": termination_condition,
+                "solver": solver_name,
+                "message": (
+                    "Optimization did not complete successfully: "
+                    f"{termination_condition}"
+                ),
+            }
         
         # Get optimization results
         results = {
             "status": status,
+            "termination_condition": termination_condition,
             "objective": float(network.objective),
             "solver": solver_name,
             "generators": {
@@ -481,6 +571,7 @@ def optimize_investment(
     multi_investment_periods: bool = False
 ) -> Dict[str, Any]:
     """Run investment optimization to determine optimal capacity expansion"""
+    network_name = _checked_network_source(network_name, purpose="network_name")
     network = Network(network_name)
     
     try:
@@ -490,13 +581,28 @@ def optimize_investment(
                 network.generators.carrier.isin(carriers), "p_nom_extendable"
             ] = True
         
-        status = network.lopf(
-                    solver_name=solver_name
-                )
+        status, termination_condition = _optimize(
+            network,
+            solver_name=solver_name,
+            multi_investment_periods=multi_investment_periods,
+        )
+
+        if status != "ok":
+            return {
+                "status": status,
+                "termination_condition": termination_condition,
+                "solver": solver_name,
+                "message": (
+                    "Investment optimization did not complete successfully: "
+                    f"{termination_condition}"
+                ),
+            }
         
         # Extract investment results
         results = {
             "status": status,
+            "termination_condition": termination_condition,
+            "solver": solver_name,
             "objective": float(network.objective),
             "investments": {
                 "generators": {
@@ -530,16 +636,35 @@ def optimize_investment(
         }
 
 @mcp.tool()
-def import_from_csv_folder(folder_path: str) -> Dict[str, Any]:
-    """Import network from CSV files"""
+def import_from_csv_folder(
+    folder_path: str, output_path: Optional[str] = None
+) -> Dict[str, Any]:
+    """Import a CSV network and save it to NetCDF.
+
+    ``output_path`` is explicit for new callers. Omitting it keeps the original
+    API behavior and writes ``<folder name>.nc`` in the working directory. The
+    resolved destination always passes through the shared path policy.
+    """
+    if output_path is None:
+        output_path = os.path.basename(os.path.normpath(folder_path)) + ".nc"
+    try:
+        folder_path = checked_read_tree(folder_path, purpose="folder_path")
+    except PathNotAllowed as exc:
+        return {"status": "error", "message": str(exc)}
+    try:
+        output_path = checked_path(
+            output_path, purpose="output_path", for_write=True
+        )
+    except PathNotAllowed as exc:
+        return {"status": "error", "message": str(exc)}
     try:
         network = Network()
         network.import_from_csv_folder(folder_path)
-        network_name = os.path.basename(folder_path) + ".nc"
-        network.export_to_netcdf(network_name)
+        network.export_to_netcdf(output_path)
         return {
             "status": "success",
-            "message": f"Network imported from {folder_path} and saved to {network_name}"
+            "message": f"Network imported from {folder_path} and saved to {output_path}",
+            "network_file": output_path,
         }
     except Exception as e:
         return {
@@ -551,8 +676,17 @@ def import_from_csv_folder(folder_path: str) -> Dict[str, Any]:
 def export_to_csv_folder(network_name: str, folder_path: str) -> Dict[str, Any]:
     """Export network to CSV files"""
     try:
+        folder_path = checked_path(folder_path, purpose="folder_path", for_write=True)
+    except PathNotAllowed as exc:
+        return {"status": "error", "message": str(exc)}
+    try:
+        network_name = _checked_network_source(network_name, purpose="network_name")
         network = Network(network_name)
-        network.export_to_csv_folder(folder_path)
+        staged_directory_write(
+            folder_path,
+            True,
+            lambda staging: network.export_to_csv_folder(staging),
+        )
         return {
             "status": "success",
             "message": f"Network exported to {folder_path}"
@@ -565,138 +699,82 @@ def export_to_csv_folder(network_name: str, folder_path: str) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# powerio bridge: import any powerio readable case as a PyPSA network.
-# powerio parses MATPOWER .m, PSS/E .raw (v33), PowerWorld .aux, PowerModels
-# JSON, and egret JSON; the case becomes a PYPOWER ppc dict, pypsa imports it,
-# and the network is saved to a .nc file whose path the other tools accept as
-# network_name. powerio is an optional extra, so the tools degrade to a status
-# dict when it is missing.
+# PowerIO interchange: resolve one balanced state, use PowerIO's native PyPSA CSV
+# writer, then save the PyPSA network to the NetCDF path used by other tools.
 # ---------------------------------------------------------------------------
 
-_POWERIO_HINT = "powerio not installed: pip install 'powerio[mcp,matrix]'"
-
-# powerio bus kind -> MATPOWER/PYPOWER BUS_TYPE code
-# NOTE: _PPC_BUS_TYPE and _powerio_case_to_ppc are duplicated between
-# pandapower/panda_mcp.py and PyPSA/pypsa_mcp.py (server scripts are
-# standalone); keep the two copies identical and sync any fix to both.
-_PPC_BUS_TYPE = {"PQ": 1.0, "PV": 2.0, "REF": 3.0, "ISOLATED": 4.0}
-
-
-def _powerio_case_to_ppc(case) -> Dict[str, Any]:
-    """Build a PYPOWER ppc dict from a powerio Network.
-
-    Values are MATPOWER style (MW, MVAr, degrees), which is what powerio's
-    parsed source tables carry; in-service loads and shunts are summed into
-    the bus table the way MATPOWER stores them.
-    """
-    import numpy as np
-
-    buses = case.buses
-    row_of = {b["id"]: i for i, b in enumerate(buses)}
-    bus = np.zeros((len(buses), 13))
-    for i, b in enumerate(buses):
-        bus[i, :] = (
-            b["id"], _PPC_BUS_TYPE.get(b["kind"], 1.0), 0.0, 0.0, 0.0, 0.0,
-            b["area"], b["vm"], b["va"], b["base_kv"], b["zone"], b["vmax"], b["vmin"],
-        )
-    for load in case.loads:
-        i = row_of.get(load["bus"])
-        if i is not None and load["in_service"]:
-            bus[i, 2] += load["p"]
-            bus[i, 3] += load["q"]
-    for shunt in case.shunts:
-        i = row_of.get(shunt["bus"])
-        if i is not None and shunt["in_service"]:
-            bus[i, 4] += shunt["g"]
-            bus[i, 5] += shunt["b"]
-
-    gens = case.generators
-    gen = np.zeros((len(gens), 21))
-    for i, g in enumerate(gens):
-        gen[i, :10] = (
-            g["bus"], g["pg"], g["qg"], g["qmax"], g["qmin"], g["vg"],
-            g["mbase"], float(g["in_service"]), g["pmax"], g["pmin"],
-        )
-
-    branches = case.branches
-    branch = np.zeros((len(branches), 13))
-    for i, br in enumerate(branches):
-        branch[i, :] = (
-            br["from_id"], br["to_id"], br["r"], br["x"], br["b"],
-            br["rate_a"], br["rate_b"], br["rate_c"], br["tap"], br["shift"],
-            float(br["in_service"]), br["angmin"], br["angmax"],
-        )
-
-    ppc = {
-        "version": "2",
-        "baseMVA": float(case.base_mva),
-        "bus": bus,
-        "gen": gen,
-        "branch": branch,
-    }
-
-    # gencost rows are [model, startup, shutdown, ncost, coeffs...] with
-    # coefficients left-aligned after ncost, padded to the widest row — the
-    # layout from_ppc reads. MATPOWER requires cost data for all gens or none,
-    # so a partial cost set is dropped rather than padded with fake rows.
-    costs = [g["cost"] for g in gens]
-    if costs and all(c is not None for c in costs):
-        gencost = np.zeros((len(costs), 4 + max(len(c["coeffs"]) for c in costs)))
-        for i, c in enumerate(costs):
-            gencost[i, :4] = (c["model"], c["startup"], c["shutdown"], c["ncost"])
-            gencost[i, 4:4 + len(c["coeffs"])] = c["coeffs"]
-        ppc["gencost"] = gencost
-    return ppc
-
-
 def _import_case_to_netcdf(case, output_path: str, overwrite_zero_s_nom: Optional[float]):
-    """Import a powerio case into a fresh PyPSA network, save it to
-    output_path, and collect warnings about anything the ppc import cannot
-    represent."""
-    ppc = _powerio_case_to_ppc(case)
-    warnings = []
-    isolated = ppc["bus"][:, 1] == 4.0
-    if isolated.any():
-        # import_from_pypower_ppc indexes ["", "PQ", "PV", "Slack"] by bus
-        # type, so type 4 would raise; PyPSA has no isolated bus type.
-        ppc["bus"][isolated, 1] = 1.0
-        warnings.append(f"{int(isolated.sum())} isolated bus(es) imported as PQ")
-    if any(g["cost"] is not None for g in case.generators):
-        warnings.append(
-            "generator cost data is not representable by the PyPSA ppc import and was dropped"
-        )
-    if (ppc["bus"][:, 9] == 0).any():
-        warnings.append("buses with base_kv 0 are assigned v_nom 1 by PyPSA")
+    """Use PowerIO's native PyPSA CSV writer, then persist the network."""
+    with tempfile.TemporaryDirectory(prefix="powermcp-pypsa-") as staging:
+        written = case.write_pypsa_csv_folder(staging)
+        network = Network()
+        network.import_from_csv_folder(staging)
+    warnings = list(written.get("warnings", []))
 
-    # PyPSA's import_from_pypower_ppc ignores the ppc status columns (branch
-    # col 10, gen col 7), so out-of-service elements would import as fully
-    # active and silently change topology. Drop them before import and report
-    # the count. (pandapower's from_ppc honors status, so its bridge does not
-    # need this — keep that asymmetry in mind when syncing the shared helper.)
-    br_oos = ppc["branch"][:, 10] == 0.0
-    if br_oos.any():
-        ppc["branch"] = ppc["branch"][~br_oos]
+    # PowerIO 0.9 preserves source generator voltage targets in its native
+    # generators.csv extension column.  PyPSA imports that column but regulates
+    # voltage through Bus.v_mag_pu_set, so apply it explicitly before solving.
+    if "v_mag_pu_set" in network.generators:
+        generators = network.generators
+        regulated = generators.loc[
+            generators["control"].isin(("PV", "Slack"))
+            & generators["v_mag_pu_set"].notna()
+            & generators["bus"].isin(network.buses.index),
+            ["bus", "v_mag_pu_set"],
+        ].sort_index(kind="stable")
+        for bus, targets in regulated.groupby("bus", sort=True):
+            values = targets["v_mag_pu_set"].astype(float)
+            target = float(values.iloc[0])
+            network.buses.loc[bus, "v_mag_pu_set"] = target
+            if not np.allclose(values.to_numpy(), target):
+                warnings.append(
+                    f"multiple voltage targets regulate bus {bus}; "
+                    f"using {target} from the first generator"
+                )
+
+    # The 0.9 CSV writer emits generators in canonical source order.  Restore
+    # transition costs that PyPSA supports but the writer does not yet emit.
+    source_generators = list(case.generators)
+    if len(source_generators) == len(network.generators):
+        network.generators["start_up_cost"] = [
+            float((generator.get("cost") or {}).get("startup", 0.0))
+            for generator in source_generators
+        ]
+        network.generators["shut_down_cost"] = [
+            float((generator.get("cost") or {}).get("shutdown", 0.0))
+            for generator in source_generators
+        ]
+    else:
         warnings.append(
-            f"{int(br_oos.sum())} out-of-service branch(es) dropped "
-            "(PyPSA's ppc import does not model branch status)"
+            "generator transition costs could not be restored because the "
+            "PowerIO and PyPSA generator counts differ"
         )
-    gen_oos = ppc["gen"][:, 7] == 0.0
-    if gen_oos.any():
-        ppc["gen"] = ppc["gen"][~gen_oos]
-        if "gencost" in ppc:
-            ppc["gencost"] = ppc["gencost"][~gen_oos]
+    constant_costs = sum(
+        1
+        for generator in source_generators
+        if (generator.get("cost") or {}).get("model") == 2
+        and (generator.get("cost") or {}).get("coeffs")
+        and float((generator.get("cost") or {})["coeffs"][-1]) != 0.0
+    )
+    if constant_costs:
         warnings.append(
-            f"{int(gen_oos.sum())} out-of-service generator(s) dropped "
-            "(PyPSA's ppc import does not model generator status)"
+            f"{constant_costs} generator constant polynomial cost term(s) "
+            "have no equivalent in the PyPSA generator objective and were dropped"
         )
 
-    # Only in-service branches remain now, so the rating-0 check is exact.
-    if overwrite_zero_s_nom is None and (ppc["branch"][:, 5] == 0).any():
+    zero_ratings = 0
+    for table in (network.lines, network.transformers):
+        if "s_nom" not in table:
+            continue
+        zero = table["s_nom"] == 0
+        zero_ratings += int(zero.sum())
+        if overwrite_zero_s_nom is not None:
+            table.loc[zero, "s_nom"] = overwrite_zero_s_nom
+    if zero_ratings and overwrite_zero_s_nom is None:
         warnings.append(
-            "branches with rating 0 imported with s_nom 0; pass overwrite_zero_s_nom to set a value"
+            f"{zero_ratings} branch(es) with rating 0 imported with s_nom 0; "
+            "pass overwrite_zero_s_nom to set a value"
         )
-    network = Network()
-    network.import_from_pypower_ppc(ppc, overwrite_zero_s_nom=overwrite_zero_s_nom)
     try:
         network.export_to_netcdf(output_path)
     except OSError as exc:
@@ -718,17 +796,17 @@ def import_case_from_any(
     output_path: str,
     source_format: Optional[str] = None,
     overwrite_zero_s_nom: Optional[float] = None,
+    operating_point: Optional[int] = None,
+    study_commit: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Import any powerio readable case file as a PyPSA network saved to a
     NetCDF file.
 
-    Reads MATPOWER .m, PSS/E .raw (v33), PowerWorld .aux, PowerModels JSON, or
-    egret JSON via powerio and writes a PyPSA network to output_path (use a
-    .nc extension); pass that path as network_name to the other tools. PyPSA's
-    ppc import drops generator cost data; anything else it cannot represent is
-    listed in the returned warnings. Branches with rating 0 are imported with
-    s_nom 0 unless overwrite_zero_s_nom supplies a value. powerio is a core
-    dependency, so this is always available.
+    Reads any balanced PowerIO format or a ``.pio.json`` package and writes a
+    PyPSA network to output_path. If the package contains stored state data,
+    select exactly one operating_point or study_commit; PowerIO materializes it
+    first.
+    PowerIO's native PyPSA writer preserves supported costs and element status.
 
     Args:
         file_path: Path to the case file
@@ -737,18 +815,32 @@ def import_case_from_any(
             egret-json, psse, powerworld); inferred from the file extension
             when omitted
         overwrite_zero_s_nom: Replacement s_nom for branches with rating 0
+        operating_point: Optional package operating-point index to materialize
+        study_commit: Optional package study-commit index to materialize
 
     Returns:
         Dict with status, the saved network_file path, component counts, and
         warnings about dropped or adjusted data
     """
     try:
-        import powerio
-    except ImportError:
-        return {"status": "error", "message": _POWERIO_HINT}
+        file_path = checked_path(file_path, purpose="file_path")
+    except PathNotAllowed as exc:
+        return {"status": "error", "message": str(exc)}
     try:
-        case = powerio.parse_file(file_path, source_format)
-        info, warnings = _import_case_to_netcdf(case, output_path, overwrite_zero_s_nom)
+        output_path = checked_path(output_path, purpose="output_path", for_write=True)
+    except PathNotAllowed as exc:
+        return {"status": "error", "message": str(exc)}
+    try:
+        prepared = resolve_solver_case(
+            file_path=file_path,
+            source_format=source_format,
+            operating_point=operating_point,
+            study_commit=study_commit,
+        )
+        info, warnings = _import_case_to_netcdf(
+            prepared.network, output_path, overwrite_zero_s_nom
+        )
+        warnings = list(prepared.warnings) + warnings
     except FileNotFoundError:
         return {"status": "error", "message": f"File not found: {file_path}"}
     except Exception as e:
@@ -759,6 +851,7 @@ def import_case_from_any(
         "network_file": output_path,
         "info": info,
         "warnings": warnings,
+        **({"package": prepared.package} if prepared.package is not None else {}),
     }
 
 
@@ -767,13 +860,17 @@ def import_case_from_json(
     network_json: str,
     output_path: str,
     overwrite_zero_s_nom: Optional[float] = None,
+    operating_point: Optional[int] = None,
+    study_commit: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """Import a powerio JSON transport string as a PyPSA network saved to a
-    NetCDF file.
+    """Import PowerIO model JSON or one selected ``.pio.json`` package state
+    as a PyPSA network saved to a NetCDF file.
 
     Accepts the `json` string returned by the powerio server's parse tool,
-    so a case parsed once there loads here without passing a file around or
-    re-parsing it. Expects source-valued tables (MW, degrees)
+    or a durable package emitted by its package tools. A package containing
+    stored state data requires exactly one operating-point or study-commit selector. A
+    case parsed once there loads here without passing a file around or
+    re-parsing it. Model JSON expects source-valued tables (MW, degrees)
     as parse emits them, not the per-unit normalize form. Writes the
     network to output_path (use a .nc extension); pass that path as
     network_name to the other tools. powerio is a core dependency, so this is
@@ -783,18 +880,27 @@ def import_case_from_json(
         network_json: The JSON transport string from powerio
         output_path: Where to save the imported network (.nc)
         overwrite_zero_s_nom: Replacement s_nom for branches with rating 0
+        operating_point: Optional package operating-point index to materialize
+        study_commit: Optional package study-commit index to materialize
 
     Returns:
         Dict with status, the saved network_file path, component counts, and
         warnings about dropped or adjusted data
     """
     try:
-        import powerio
-    except ImportError:
-        return {"status": "error", "message": _POWERIO_HINT}
+        output_path = checked_path(output_path, purpose="output_path", for_write=True)
+    except PathNotAllowed as exc:
+        return {"status": "error", "message": str(exc)}
     try:
-        case = powerio.from_json(network_json)
-        info, warnings = _import_case_to_netcdf(case, output_path, overwrite_zero_s_nom)
+        prepared = resolve_solver_case(
+            network_json=network_json,
+            operating_point=operating_point,
+            study_commit=study_commit,
+        )
+        info, warnings = _import_case_to_netcdf(
+            prepared.network, output_path, overwrite_zero_s_nom
+        )
+        warnings = list(prepared.warnings) + warnings
     except Exception as e:
         return {"status": "error", "message": f"Failed to import case: {str(e)}"}
     return {
@@ -803,6 +909,7 @@ def import_case_from_json(
         "network_file": output_path,
         "info": info,
         "warnings": warnings,
+        **({"package": prepared.package} if prepared.package is not None else {}),
     }
 
 

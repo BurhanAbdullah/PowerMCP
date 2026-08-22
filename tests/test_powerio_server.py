@@ -1,11 +1,14 @@
-"""Tests for the powerio conversion server, the PyPSA bridge, and the
+"""Tests for the PowerIO conversion server, solver integrations, and the
 registry/runner wiring.
 
-powerio is a core dependency, so it is normally present; the importorskip below
-stays as insurance for stripped-down environments.
-The FastMCP-decorated tools stay ordinary callables, so we exercise them
-in-process without a transport. The launch test lives here rather than in
-test_runner.py so it skips with the rest of the module.
+The server under test is powerio's own ``powerio.mcp.server``: this repo runs
+that module and keeps no copy of it, so these tests are the consumer suite over
+a dependency's surface. powerio is a core dependency, so it is normally present;
+the importorskip below stays as insurance for stripped-down environments.
+The decorated tools stay ordinary callables, so most cases exercise them
+in-process; ``test_transport.py`` covers what only a real MCP transport shows.
+The launch test lives here rather than in test_runner.py so it skips with the
+rest of the module.
 
 tests/data/case9.m is vendored verbatim from
 https://github.com/MATPOWER/matpower/tree/master/data (BSD-3).
@@ -16,25 +19,22 @@ tests/data/powerworld/ACTIVSg200.pwd is vendored from powerio's test suite
 from __future__ import annotations
 
 import asyncio
+import builtins
 import importlib
 import json
+import pickle
 import sys
 import types
 from pathlib import Path
 
 import pytest
 
-pytest.importorskip("powerio", minversion="0.4.0")
+pytest.importorskip("powerio", minversion="0.9.0")
 
 import powerio  # noqa: E402
+from powerio.mcp import server as powerio_mcp  # noqa: E402
 
 from powermcp.registry import TOOLS  # noqa: E402
-
-_SERVER_DIR = str(TOOLS["powerio"].resolve_server_dir())
-if _SERVER_DIR not in sys.path:
-    sys.path.insert(0, _SERVER_DIR)
-
-import powerio_mcp  # noqa: E402
 
 _PYPSA_DIR = str(TOOLS["pypsa"].resolve_server_dir())
 if _PYPSA_DIR not in sys.path:
@@ -71,11 +71,11 @@ mpc.branch = [
 def test_parse_json_round_trips():
     r = powerio_mcp.parse(path=str(CASE9))
     assert r["schema"] == "powerio.parse"
-    assert r["schema_version"] == "0.1"
+    assert r["powerio_version"] == powerio.__version__
     assert r["domain"] == "transmission"
     assert r["model"] == "balanced"
-    assert r["json_format"] == "powerio-json"
-    assert r["source_format"] == "Matpower"
+    assert r["json_format"] == "model-json"
+    assert r["source_format"] == "matpower"
     assert isinstance(r["warnings"], list)
     assert r["summary"]["elements"]["buses"] == 9
     assert powerio.from_json(r["json"]).n_buses == 9
@@ -84,7 +84,7 @@ def test_parse_json_round_trips():
 def test_tool_surface_is_canonical():
     tools = {tool.name: tool for tool in asyncio.run(powerio_mcp.mcp.list_tools())}
     names = set(tools)
-    assert names == {
+    required_names = {
         "convert",
         "save",
         "summary",
@@ -94,19 +94,20 @@ def test_tool_surface_is_canonical():
         "diagnostics",
         "display",
     }
+    assert required_names <= names
     for name in ("parse", "summary", "normalize", "matrix", "display"):
-        props = tools[name].inputSchema["properties"]
+        props = tools[name].input_schema["properties"]
         assert "from_format" in props
         assert "format" not in props
-    parse_props = tools["parse"].inputSchema["properties"]
+    parse_props = tools["parse"].input_schema["properties"]
     assert "transport" in parse_props
-    convert_props = tools["convert"].inputSchema["properties"]
+    convert_props = tools["convert"].input_schema["properties"]
     assert "to_format" in convert_props and "from_format" in convert_props
     assert "package_json" in convert_props
     assert "to" not in convert_props and "format" not in convert_props
     for name in ("summary", "normalize", "matrix"):
-        assert "package_json" in tools[name].inputSchema["properties"]
-    save_schema = tools["save"].inputSchema
+        assert "package_json" in tools[name].input_schema["properties"]
+    save_schema = tools["save"].input_schema
     assert save_schema["required"] == ["out_path"]
     save_props = save_schema["properties"]
     assert "to_format" in save_props and "from_format" in save_props
@@ -128,11 +129,11 @@ def test_parse_transport_accepted_downstream():
 def test_matrix_bprime():
     m = powerio_mcp.matrix("bprime", path=str(CASE9))
     assert m["schema"] == "powerio.matrix"
-    assert m["schema_version"] == "0.1"
+    assert m["powerio_version"] == powerio.__version__
     assert m["domain"] == "transmission"
     assert m["model"] == "balanced"
-    assert m["json_format"] == "powerio-json"
-    assert m["source_format"] == "Matpower"
+    assert m["json_format"] == "model-json"
+    assert m["source_format"] == "matpower"
     assert isinstance(m["warnings"], list)
     assert m["format"] == "coo"
     assert m["shape"] == [9, 9]
@@ -166,14 +167,14 @@ def test_convert_powermodels():
 def test_summary_fields():
     s = powerio_mcp.summary(path=str(CASE9))
     assert s["schema"] == "powerio.summary"
-    assert s["schema_version"] == "0.1"
+    assert s["powerio_version"] == powerio.__version__
     assert s["domain"] == "transmission"
     assert s["model"] == "balanced"
-    assert s["json_format"] == "powerio-json"
+    assert s["json_format"] == "model-json"
     assert isinstance(s["warnings"], list)
     assert s["elements"]["buses"] == 9
     assert s["base_mva"] == 100.0
-    assert s["source_format"] == "Matpower"
+    assert s["source_format"] == "matpower"
     assert s["topology"]["connected_components"] == 1
     assert s["elements"]["branches"] == 9
     assert s["topology"]["connectivity_report"]
@@ -264,6 +265,102 @@ def test_package_transport_flows_through_core_tools(tmp_path):
     assert isinstance(diag["diagnostics"], list)
 
 
+def test_pypsa_interchange_accepts_static_package(tmp_path):
+    package_json = powerio.Package.from_file(CASE9).to_json()
+    out = tmp_path / "case9-package.nc"
+    result = pypsa_mcp.import_case_from_json(package_json, str(out))
+
+    assert result["status"] == "success", result
+    assert result["package"]["model_kind"] == "balanced"
+    assert result["package"]["source_map_entries"] > 0
+    assert len(pypsa.Network(str(out)).buses) == 9
+
+
+def test_pandapower_interchange_accepts_static_package():
+    panda_dir = str(TOOLS["pandapower"].resolve_server_dir())
+    if panda_dir not in sys.path:
+        sys.path.insert(0, panda_dir)
+    import panda_mcp  # noqa: E402
+
+    result = panda_mcp.load_network_from_json(
+        powerio.Package.from_file(CASE9).to_json()
+    )
+
+    assert result["status"] == "success", result
+    assert result["package"]["model_kind"] == "balanced"
+    assert len(panda_mcp._current_net.bus) == 9
+
+
+def test_solver_interchange_requires_explicit_package_state(tmp_path):
+    package = powerio.Package.from_file(CASE9)
+    package.set_operating_points(
+        {
+            "time_axis": {"periods": 1, "labels": ["dispatch"]},
+            "points": [
+                {
+                    "index": 0,
+                    "updates": [
+                        {
+                            "element": {
+                                "table": "generators",
+                                "source_uid": "generators:0",
+                            },
+                            "fields": {"pg": 123.0},
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    rejected = pypsa_mcp.import_case_from_json(
+        package.to_json(), str(tmp_path / "unselected.nc")
+    )
+    assert rejected["status"] == "error"
+    assert "operating_point from [0]" in rejected["message"]
+
+    out = tmp_path / "selected.nc"
+    selected = pypsa_mcp.import_case_from_json(
+        package.to_json(), str(out), operating_point=0
+    )
+    assert selected["status"] == "success", selected
+    assert selected["package"]["materialized"] == {
+        "kind": "operating_point",
+        "index": 0,
+    }
+    assert pypsa.Network(str(out)).generators.iloc[0].p_set == pytest.approx(123.0)
+
+
+def test_solver_interchange_materializes_study_commit(tmp_path):
+    package = powerio.Package.from_file(CASE9)
+    document = json.loads(package.to_json())
+    document["study"] = {
+        "label": "load study",
+        "commits": [
+            {
+                "label": "add load",
+                "edits": [
+                    {
+                        "kind": "demand_delta",
+                        "bus": {"table": "buses", "source_uid": "buses:0"},
+                        "p_mw": 7.0,
+                        "q_mvar": 3.0,
+                    }
+                ],
+            }
+        ],
+    }
+
+    out = tmp_path / "study.nc"
+    result = pypsa_mcp.import_case_from_json(
+        json.dumps(document), str(out), study_commit=0
+    )
+
+    assert result["status"] == "success", result
+    assert result["package"]["materialized"] == {"kind": "study_commit", "index": 0}
+    assert (pypsa.Network(str(out)).loads.p_set == 7.0).any()
+
+
 def test_save_exactly_one_input(tmp_path):
     out = tmp_path / "x.m"
     with pytest.raises(ValueError):
@@ -290,9 +387,90 @@ def test_pypsa_import_case_from_json(tmp_path):
     assert len(pypsa.Network(str(out)).buses) == 9
 
 
-def test_pypsa_import_reports_dropped_gencost(tmp_path):
-    r = pypsa_mcp.import_case_from_any(str(CASE9), str(tmp_path / "c.nc"))
-    assert any("cost" in w for w in r["warnings"]), r["warnings"]
+def test_pypsa_import_preserves_supported_generator_costs(tmp_path):
+    out = tmp_path / "costs.nc"
+    result = pypsa_mcp.import_case_from_any(str(CASE9), str(out))
+    assert result["status"] == "success", result
+    generators = pypsa.Network(str(out)).generators
+    assert (generators.marginal_cost != 0).all()
+    assert generators.start_up_cost.tolist() == pytest.approx([1500, 2000, 3000])
+    assert any("constant polynomial cost" in warning for warning in result["warnings"])
+
+
+def test_pypsa_import_applies_generator_voltage_targets_to_buses(tmp_path):
+    out = tmp_path / "voltage-targets.nc"
+    result = pypsa_mcp.import_case_from_any(str(CASE9), str(out))
+    assert result["status"] == "success", result
+
+    network = pypsa.Network(str(out))
+    assert network.buses.loc[["1", "2", "3"], "v_mag_pu_set"].tolist() == pytest.approx(
+        [1.04, 1.025, 1.025]
+    )
+
+
+def test_pypsa_create_network_uses_default_snapshot(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    result = pypsa_mcp.create_network("empty")
+
+    assert result["status"] == "success", result
+    network = pypsa.Network(result["network_file"])
+    assert len(network.snapshots) == 1
+
+
+def _write_feasible_pypsa_network(path: Path, *, extendable: bool = False) -> None:
+    network = pypsa.Network()
+    network.add("Bus", "bus")
+    network.add("Load", "load", bus="bus", p_set=10.0)
+    network.add(
+        "Generator",
+        "generator",
+        bus="bus",
+        carrier="gas",
+        p_nom=0.0 if extendable else 20.0,
+        p_nom_extendable=extendable,
+        capital_cost=5.0,
+        marginal_cost=10.0,
+    )
+    network.export_to_netcdf(path)
+
+
+def test_pypsa_optimize_network_uses_modern_optimizer(tmp_path):
+    path = tmp_path / "dispatch.nc"
+    _write_feasible_pypsa_network(path)
+
+    result = pypsa_mcp.optimize_network(str(path))
+
+    assert result["status"] == "ok", result
+    assert result["termination_condition"] == "optimal"
+    assert result["objective"] == pytest.approx(100.0)
+    assert result["generators"]["generator"]["p"] == pytest.approx(10.0)
+
+
+def test_pypsa_optimize_investment_uses_modern_optimizer(tmp_path):
+    path = tmp_path / "investment.nc"
+    _write_feasible_pypsa_network(path, extendable=True)
+
+    result = pypsa_mcp.optimize_investment(str(path), carriers=["gas"])
+
+    assert result["status"] == "ok", result
+    assert result["termination_condition"] == "optimal"
+    assert result["investments"]["generators"]["generator"][
+        "p_nom_opt"
+    ] == pytest.approx(10.0)
+
+
+def test_pypsa_legacy_optimizer_options_fail_clearly(tmp_path):
+    path = tmp_path / "legacy-options.nc"
+    path.write_bytes(b"")
+
+    formulation = pypsa_mcp.optimize_network(str(path), formulation="angles")
+    pyomo = pypsa_mcp.optimize_network(str(path), pyomo=True)
+
+    assert formulation["status"] == "error"
+    assert "legacy LOPF formulations" in formulation["message"]
+    assert pyomo["status"] == "error"
+    assert "legacy Pyomo" in pyomo["message"]
 
 
 def test_pypsa_import_overwrite_zero_s_nom(tmp_path):
@@ -314,14 +492,105 @@ def test_pypsa_import_missing_file(tmp_path):
     assert "not found" in r["message"].lower()
 
 
+def test_pypsa_network_name_is_confined(tmp_path, monkeypatch):
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    outside = tmp_path / "outside.nc"
+    monkeypatch.setenv("POWERIO_MCP_ALLOWED_ROOTS", str(allowed))
+
+    with pytest.raises(ValueError, match="outside allowed MCP roots"):
+        pypsa_mcp.get_network_info(str(outside))
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlink semantics")
+def test_pypsa_csv_import_preflights_the_complete_tree(tmp_path, monkeypatch):
+    allowed = tmp_path / "allowed"
+    dataset = allowed / "network"
+    outside = tmp_path / "outside.csv"
+    dataset.mkdir(parents=True)
+    outside.write_text("name\nsecret\n")
+    (dataset / "buses.csv").symlink_to(outside)
+    monkeypatch.setenv("POWERIO_MCP_ALLOWED_ROOTS", str(allowed))
+
+    result = pypsa_mcp.import_from_csv_folder(
+        str(dataset), str(allowed / "network.nc")
+    )
+    assert result["status"] == "error"
+    assert "outside its allowed MCP root" in result["message"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlink semantics")
+def test_pypsa_network_read_preflights_a_csv_tree(tmp_path, monkeypatch):
+    allowed = tmp_path / "allowed"
+    dataset = allowed / "network"
+    outside = tmp_path / "outside.csv"
+    dataset.mkdir(parents=True)
+    outside.write_text("name\nsecret\n")
+    (dataset / "buses.csv").symlink_to(outside)
+    monkeypatch.setenv("POWERIO_MCP_ALLOWED_ROOTS", str(allowed))
+
+    with pytest.raises(ValueError, match="outside its allowed MCP root"):
+        pypsa_mcp.get_network_info(str(dataset))
+
+
+def test_pypsa_csv_import_checks_an_explicit_output(tmp_path, monkeypatch):
+    allowed = tmp_path / "allowed"
+    dataset = allowed / "network"
+    dataset.mkdir(parents=True)
+    outside = tmp_path / "outside.nc"
+    monkeypatch.setenv("POWERIO_MCP_ALLOWED_ROOTS", str(allowed))
+
+    result = pypsa_mcp.import_from_csv_folder(str(dataset), str(outside))
+
+    assert result["status"] == "error"
+    assert "outside allowed MCP roots" in result["message"]
+
+
+def test_pypsa_csv_import_keeps_the_checked_legacy_default(tmp_path, monkeypatch):
+    allowed = tmp_path / "allowed"
+    dataset = allowed / "network"
+    dataset.mkdir(parents=True)
+    working = tmp_path / "working"
+    working.mkdir()
+    monkeypatch.chdir(working)
+    monkeypatch.setenv("POWERIO_MCP_ALLOWED_ROOTS", str(allowed))
+
+    result = pypsa_mcp.import_from_csv_folder(str(dataset))
+
+    assert result["status"] == "error"
+    assert "outside allowed MCP roots" in result["message"]
+
+
+def test_pypsa_csv_export_is_staged_and_preserves_unrelated_files(tmp_path):
+    network_file = tmp_path / "network.nc"
+    network = pypsa.Network()
+    network.add("Bus", "bus")
+    network.export_to_netcdf(network_file)
+
+    output = tmp_path / "csv"
+    output.mkdir()
+    (output / "keep.txt").write_text("keep")
+    result = pypsa_mcp.export_to_csv_folder(str(network_file), str(output))
+
+    assert result["status"] == "success", result
+    assert (output / "keep.txt").read_text() == "keep"
+    assert (output / "buses.csv").is_file()
+
+
 def test_registry_entry():
     t = TOOLS["powerio"]
     assert t.kind == "open-source"
     assert t.extra is None  # promoted to a core dependency (issue #30)
-    assert t.run_kind == "script"
     assert t.windows_only is False
     assert t.probe == "powerio"
-    assert t.resolve_entry_script().is_file()
+    # The server ships in powerio's own wheel, so there is no bundled dir here
+    # and no local file enumerating powerio's tool surface.
+    assert t.run_kind == "package"
+    assert t.module == "powerio.mcp"
+    assert t.server_dir is None
+    with pytest.raises(ValueError, match="own distribution"):
+        t.resolve_server_dir()
+    assert not (Path(__file__).resolve().parents[1] / "powerio").exists()
 
 
 @pytest.fixture()
@@ -331,7 +600,7 @@ def record_mcp_run(monkeypatch):
     def fake_run(self, *args, **kwargs):
         calls.append((args, kwargs))
 
-    monkeypatch.setattr("mcp.server.fastmcp.FastMCP.run", fake_run, raising=True)
+    monkeypatch.setattr("mcp.server.mcpserver.MCPServer.run", fake_run, raising=True)
     return calls
 
 
@@ -340,8 +609,10 @@ def test_launch_powerio_runs_once(record_mcp_run):
 
     runner.launch("powerio")
     assert len(record_mcp_run) == 1
-    _, kwargs = record_mcp_run[0]
-    assert kwargs.get("transport") == "stdio"
+    args, kwargs = record_mcp_run[0]
+    # powerio's own entry point takes the SDK default rather than naming it.
+    transport = kwargs.get("transport") or (args[0] if args else "stdio")
+    assert transport == "stdio"
 
 
 def test_inline_convert_stages_no_temp_files(monkeypatch):
@@ -381,27 +652,29 @@ mpc.branch = [
 """
 
 
-def test_pypsa_import_drops_out_of_service_branch(tmp_path):
+def test_pypsa_import_preserves_out_of_service_branch(tmp_path):
     src = tmp_path / "oos.m"
     src.write_text(OOS_CASE)
     out = tmp_path / "oos.nc"
     r = pypsa_mcp.import_case_from_any(str(src), str(out))
     assert r["status"] == "success", r
-    assert pypsa.Network(str(out)).lines.shape[0] == 1  # only the in-service 1-2
-    assert any("out-of-service branch" in w for w in r["warnings"]), r["warnings"]
+    lines = pypsa.Network(str(out)).lines
+    assert lines.shape[0] == 2
+    assert lines.active.tolist().count(False) == 1
 
 
-def test_pypsa_import_warns_out_of_service_generator(tmp_path):
+def test_pypsa_import_preserves_out_of_service_generator(tmp_path):
     src = tmp_path / "oos.m"
     src.write_text(OOS_CASE)
     r = pypsa_mcp.import_case_from_any(str(src), str(tmp_path / "g.nc"))
     assert r["status"] == "success", r
-    assert any("out-of-service generator" in w for w in r["warnings"]), r["warnings"]
+    generators = pypsa.Network(str(tmp_path / "g.nc")).generators
+    assert generators.shape[0] == 2
+    assert generators.active.tolist().count(False) == 1
 
 
 def test_pandapower_bridge_honors_branch_status(tmp_path):
-    # pandapower's from_ppc models branch status, so the OOS branch should be
-    # present but marked out-of-service (not dropped like PyPSA).
+    # PowerIO's native pandapower writer keeps the OOS row and its status.
     panda_dir = str(TOOLS["pandapower"].resolve_server_dir())
     if panda_dir not in sys.path:
         sys.path.insert(0, panda_dir)
@@ -413,6 +686,29 @@ def test_pandapower_bridge_honors_branch_status(tmp_path):
     assert res["status"] == "success", res
     in_service = panda_mcp._current_net.line["in_service"].tolist()
     assert len(in_service) == 2 and in_service.count(False) == 1, in_service
+
+
+def test_pandapower_pickle_input_is_rejected_without_execution(tmp_path):
+    panda_dir = str(TOOLS["pandapower"].resolve_server_dir())
+    if panda_dir not in sys.path:
+        sys.path.insert(0, panda_dir)
+    import panda_mcp  # noqa: E402
+
+    marker = tmp_path / "pickle-executed"
+
+    class Payload:
+        def __reduce__(self):
+            statement = f"open({str(marker)!r}, 'w').write('executed')"
+            return builtins.exec, (statement,)
+
+    payload = tmp_path / "network.p"
+    payload.write_bytes(pickle.dumps(Payload()))
+
+    result = panda_mcp.load_network(str(payload))
+
+    assert result["status"] == "error"
+    assert "Use a .json file" in result["message"]
+    assert not marker.exists()
 
 
 def test_matrix_laplacian():
@@ -437,6 +733,52 @@ def test_convert_oserror_normalizes_to_valueerror(monkeypatch):
         powerio_mcp.convert(to_format="psse", content="x", from_format="matpower")
 
 
+def test_allowed_roots_rejects_read_outside_root(tmp_path, monkeypatch):
+    # POWERIO_MCP_ALLOWED_ROOTS is unset for every other test in this file, so
+    # `_check_allowed_path` is a no-op there; this is the one place the
+    # containment check itself is exercised, on both the reject and admit side.
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside" / "case9.m"
+    outside.parent.mkdir()
+    outside.write_text(CASE9.read_text())
+    monkeypatch.setenv("POWERIO_MCP_ALLOWED_ROOTS", str(root))
+    with pytest.raises(ValueError, match="outside allowed MCP roots"):
+        powerio_mcp.parse(path=str(outside))
+
+
+def test_allowed_roots_admits_read_inside_root(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    root.mkdir()
+    case = root / "case9.m"
+    case.write_text(CASE9.read_text())
+    monkeypatch.setenv("POWERIO_MCP_ALLOWED_ROOTS", str(root))
+    r = powerio_mcp.parse(path=str(case))
+    assert r["schema"] == "powerio.parse"
+
+
+def test_allowed_roots_rejects_write_outside_root(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    root.mkdir()
+    outside_out = tmp_path / "outside" / "case9.raw"
+    outside_out.parent.mkdir()
+    monkeypatch.setenv("POWERIO_MCP_ALLOWED_ROOTS", str(root))
+    with pytest.raises(ValueError, match="outside allowed MCP roots"):
+        powerio_mcp.save(
+            out_path=str(outside_out), content=CASE9.read_text(), to_format="psse"
+        )
+
+
+def test_allowed_roots_admits_write_inside_root(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    root.mkdir()
+    monkeypatch.setenv("POWERIO_MCP_ALLOWED_ROOTS", str(root))
+    out = root / "case9.raw"
+    r = powerio_mcp.save(out_path=str(out), content=CASE9.read_text(), to_format="psse")
+    assert r["path"] == str(out)
+    assert out.exists()
+
+
 def test_unreadable_file_maps_cleanly(tmp_path):
     # PermissionError must surface as the documented ValueError shape, like
     # FileNotFoundError, not leak raw through the tool. (Ported from the
@@ -459,10 +801,19 @@ def test_unreadable_file_maps_cleanly(tmp_path):
 
 def test_wrong_schema_json_maps_cleanly():
     # Wrong-schema (but well-formed) JSON keeps the one error shape too; the
-    # malformed-JSON case is covered above.
+    # malformed-JSON case is covered above. Pinned to the diagnostic code, since
+    # powerio 0.9.0 replaced the old "parse failed" prose with coded messages.
     for bad in ("{}", "[]", "null", '{"buses": "nope"}'):
-        with pytest.raises(ValueError, match="parse failed"):
-            powerio_mcp.matrix("bprime", json=bad, json_format="powerio-json")
+        with pytest.raises(ValueError, match=r"PARSE\.SOURCE\.MALFORMED"):
+            powerio_mcp.matrix("bprime", json=bad, json_format="model-json")
+
+
+def test_legacy_json_format_token_still_accepted():
+    # Responses state `model-json` since powerio 0.9, but the old `powerio-json`
+    # spelling stays valid as an input so an older client keeps working.
+    transport = powerio_mcp.parse(path=str(CASE9))["json"]
+    m = powerio_mcp.matrix("bprime", json=transport, json_format="powerio-json")
+    assert m["shape"] == [9, 9]
 
 
 # ---------------------------------------------------------------------------
@@ -580,7 +931,7 @@ def test_gridfm_missing_dir_maps_cleanly(tmp_path):
 def test_display_decodes_pwd():
     r = powerio_mcp.display(str(ACTIVSG200_PWD))
     assert r["schema"] == "powerio.display"
-    assert r["schema_version"] == "0.1"
+    assert r["powerio_version"] == powerio.__version__
     assert r["domain"] == "display"
     assert r["model"] == "display"
     assert r["source_format"] == "powerworld-pwd"
@@ -641,7 +992,7 @@ def _load_opendss_configuration(monkeypatch):
 
 def test_opendss_registration_excludes_distribution_wrapper(monkeypatch):
     configuration = _load_opendss_configuration(monkeypatch)
-    from mcp.server.fastmcp import FastMCP
+    from mcp.server.mcpserver import MCPServer as FastMCP
 
     mcp = FastMCP("opendss-test")
     configuration.register_configuration_tools(mcp)
@@ -666,3 +1017,21 @@ def test_powerio_to_opendss_composition(monkeypatch, tmp_path):
     result = configuration.compile_opendss_file(str(dss_path))
     assert result["success"] is True
     assert result["payload"]["dss_file"] == str(dss_path)
+
+
+def test_opendss_without_containment_does_not_scan_the_parent_tree(
+    monkeypatch, tmp_path
+):
+    configuration = _load_opendss_configuration(monkeypatch)
+    dss_path = tmp_path / "feeder.dss"
+    dss_path.write_text("Clear")
+    monkeypatch.setattr(configuration, "allowed_roots", lambda: ())
+    monkeypatch.setattr(
+        configuration,
+        "checked_read_tree",
+        lambda *_a, **_k: pytest.fail("unconfigured OpenDSS must not scan siblings"),
+    )
+
+    result = configuration.compile_opendss_file(str(dss_path))
+
+    assert result["success"] is True

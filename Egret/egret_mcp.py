@@ -1,6 +1,6 @@
 import sys
 import os
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer as FastMCP
 from egret.data.model_data import ModelData
 from egret.models.unit_commitment import solve_unit_commitment
 from egret.models.acopf import solve_acopf, create_psv_acopf_model
@@ -10,6 +10,18 @@ import io
 import logging
 from contextlib import redirect_stdout, redirect_stderr
 import numpy as np
+
+_repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_repo_root_added = _repo_root not in sys.path
+if _repo_root_added:
+    sys.path.insert(0, _repo_root)
+try:
+    from powermcp.solver_case import resolve_solver_case
+    from powermcp.sandbox import PathNotAllowed, checked_path, ensure_checked_directory
+finally:
+    if _repo_root_added:
+        sys.path.remove(_repo_root)
+del _repo_root, _repo_root_added
 
 # Configure logging to be less verbose
 logging.getLogger('egret').setLevel(logging.WARNING)
@@ -37,6 +49,10 @@ def solve_unit_commitment_problem(
     Returns:
         Dict containing the solution results
     """
+    try:
+        case_file = checked_path(case_file, purpose="case_file")
+    except PathNotAllowed as exc:
+        return {"status": "error", "message": str(exc)}
     try:
         # Completely capture both stdout and stderr
         f_out = io.StringIO()
@@ -89,6 +105,10 @@ def solve_ac_opf(
     Returns:
         Dict containing the solution results
     """
+    try:
+        case_file = checked_path(case_file, purpose="case_file")
+    except PathNotAllowed as exc:
+        return {"status": "error", "message": str(exc)}
     try:
         # Completely capture both stdout and stderr
         f_out = io.StringIO()
@@ -143,6 +163,10 @@ def solve_dc_opf(
         Dict containing the solution results
     """
     try:
+        case_file = checked_path(case_file, purpose="case_file")
+    except PathNotAllowed as exc:
+        return {"status": "error", "message": str(exc)}
+    try:
         # Completely capture both stdout and stderr
         f_out = io.StringIO()
         f_err = io.StringIO()
@@ -182,14 +206,18 @@ def solve_dc_opf(
         }
 
 # ---------------------------------------------------------------------------
-# powerio bridge: ingest any powerio readable case into egret.
-# powerio converts MATPOWER .m, PSS/E .raw (v33), PowerWorld .aux, PowerModels
-# JSON, or its own JSON transport to egret JSON; the staged file feeds the
-# solver tools above, which only accept case_file paths. powerio is an
-# optional extra, so the tools degrade to a status dict when it is missing.
+# PowerIO interchange: resolve one balanced state, convert it to Egret JSON, and
+# stage the file consumed by the solver tools above.
 # ---------------------------------------------------------------------------
 
-_POWERIO_HINT = "powerio not installed: pip install 'powerio[mcp,matrix]'"
+
+def _ensure_egret_runs_dir() -> str:
+    from powermcp.paths import runs_dir
+
+    return ensure_checked_directory(
+        str(runs_dir("egret", create=False)),
+        purpose="generated Egret output root",
+    )
 
 
 def _stage_egret_model(egret_json_text: str):
@@ -199,7 +227,17 @@ def _stage_egret_model(egret_json_text: str):
     import tempfile
 
     md = ModelData(json.loads(egret_json_text))
-    fd, path = tempfile.mkstemp(suffix=".json", prefix="egret_case_")
+    fd, path = tempfile.mkstemp(
+        suffix=".json", prefix="egret_case_", dir=_ensure_egret_runs_dir()
+    )
+    try:
+        path = checked_path(
+            path, purpose="generated Egret case path", for_write=True
+        )
+    except BaseException:
+        os.close(fd)
+        os.unlink(path)
+        raise
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         fh.write(egret_json_text)
     info = {name: len(items) for name, items in md.data.get("elements", {}).items()}
@@ -207,13 +245,18 @@ def _stage_egret_model(egret_json_text: str):
 
 
 @mcp.tool()
-def load_model_from_any(file_path: str, source_format: Optional[str] = None) -> Dict[str, Any]:
+def load_model_from_any(
+    file_path: str,
+    source_format: Optional[str] = None,
+    operating_point: Optional[int] = None,
+    study_commit: Optional[int] = None,
+) -> Dict[str, Any]:
     """Convert any powerio readable case file into an egret model.
 
-    Reads MATPOWER .m, PSS/E .raw (v33), PowerWorld .aux, PowerModels JSON, or
-    egret JSON via powerio, converts it to egret JSON, validates it as an
-    egret ModelData, and stages it to a temp file. Pass the returned
-    `case_file` path to solve_ac_opf, solve_dc_opf, or
+    Reads any balanced PowerIO format or a ``.pio.json`` package, converts one
+    selected state to Egret JSON, validates it as ModelData, and stages it. For
+    a package containing stored state data, select operating_point or
+    study_commit. Pass the returned `case_file` path to solve_ac_opf, solve_dc_opf, or
     solve_unit_commitment_problem. powerio is a core dependency, so this is
     always available.
 
@@ -222,17 +265,25 @@ def load_model_from_any(file_path: str, source_format: Optional[str] = None) -> 
         source_format: Input format name (matpower, powermodels-json,
             egret-json, psse, powerworld); inferred from the file extension
             when omitted
+        operating_point: Optional package operating-point index to materialize
+        study_commit: Optional package study-commit index to materialize
 
     Returns:
         Dict with status, the staged `case_file` path, model element counts,
         and powerio's fidelity warnings
     """
     try:
-        import powerio
-    except ImportError:
-        return {"status": "error", "message": _POWERIO_HINT}
+        file_path = checked_path(file_path, purpose="file_path")
+    except PathNotAllowed as exc:
+        return {"status": "error", "message": str(exc)}
     try:
-        conv = powerio.convert_file(file_path, "egret-json", source_format)
+        prepared = resolve_solver_case(
+            file_path=file_path,
+            source_format=source_format,
+            operating_point=operating_point,
+            study_commit=study_commit,
+        )
+        conv = prepared.network.to_format("egret-json")
         path, info = _stage_egret_model(conv.text)
     except FileNotFoundError:
         return {"status": "error", "message": f"File not found: {file_path}"}
@@ -242,13 +293,18 @@ def load_model_from_any(file_path: str, source_format: Optional[str] = None) -> 
         "status": "success",
         "case_file": path,
         "model_info": info,
-        "warnings": list(conv.warnings),
+        "warnings": list(prepared.warnings) + list(conv.warnings),
+        **({"package": prepared.package} if prepared.package is not None else {}),
     }
 
 
 @mcp.tool()
-def load_model_from_json(network_json: str) -> Dict[str, Any]:
-    """Convert a powerio JSON transport string into an egret model.
+def load_model_from_json(
+    network_json: str,
+    operating_point: Optional[int] = None,
+    study_commit: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Convert PowerIO model JSON or one package state into an Egret model.
 
     Accepts the `json` string returned by the powerio server's parse tool,
     so a case parsed once there feeds egret without re-reading the file.
@@ -259,18 +315,20 @@ def load_model_from_json(network_json: str) -> Dict[str, Any]:
 
     Args:
         network_json: The JSON transport string from powerio
+        operating_point: Optional package operating-point index to materialize
+        study_commit: Optional package study-commit index to materialize
 
     Returns:
         Dict with status, the staged `case_file` path, model element counts,
         and powerio's fidelity warnings
     """
     try:
-        import powerio
-    except ImportError:
-        return {"status": "error", "message": _POWERIO_HINT}
-    try:
-        case = powerio.from_json(network_json)
-        conv = case.to_format("egret-json")
+        prepared = resolve_solver_case(
+            network_json=network_json,
+            operating_point=operating_point,
+            study_commit=study_commit,
+        )
+        conv = prepared.network.to_format("egret-json")
         path, info = _stage_egret_model(conv.text)
     except Exception as e:
         return {"status": "error", "message": str(e)}
@@ -278,7 +336,8 @@ def load_model_from_json(network_json: str) -> Dict[str, Any]:
         "status": "success",
         "case_file": path,
         "model_info": info,
-        "warnings": list(conv.warnings),
+        "warnings": list(prepared.warnings) + list(conv.warnings),
+        **({"package": prepared.package} if prepared.package is not None else {}),
     }
 
 

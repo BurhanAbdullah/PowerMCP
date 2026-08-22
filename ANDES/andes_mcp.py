@@ -7,19 +7,50 @@ import shutil
 import json
 from pathlib import Path
 from contextlib import redirect_stdout, redirect_stderr
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer as FastMCP
 from typing import Dict, Any, Optional
+
+_repo_root = str(Path(__file__).resolve().parents[1])
+_repo_root_added = _repo_root not in sys.path
+if _repo_root_added:
+    sys.path.insert(0, _repo_root)
+try:
+    from powermcp.solver_case import resolve_solver_case
+    from powermcp.sandbox import (
+        PathNotAllowed,
+        checked_path,
+        checked_read_tree,
+        ensure_checked_directory,
+    )
+finally:
+    if _repo_root_added:
+        sys.path.remove(_repo_root)
+del _repo_root, _repo_root_added
 
 # Storage directory resolved lazily (no filesystem writes at import time)
 def _andes_runs_dir():
     try:
         from powermcp.paths import runs_dir
-        return str(runs_dir("andes"))
+        return str(runs_dir("andes", create=False))
     except Exception:
         import os
-        d = os.path.join(os.path.expanduser("~"), ".powermcp", "runs", "andes")
-        os.makedirs(d, exist_ok=True)
-        return d
+        return os.path.join(os.path.expanduser("~"), ".powermcp", "runs", "andes")
+
+
+def _ensure_andes_runs_dir() -> str:
+    return ensure_checked_directory(
+        _andes_runs_dir(), purpose="generated ANDES output root"
+    )
+
+
+def _prepare_run_dir(name: str, purpose: str) -> str:
+    run_dir = checked_path(
+        os.path.join(_ensure_andes_runs_dir(), name),
+        purpose=purpose,
+        for_write=True,
+    )
+    os.makedirs(run_dir, exist_ok=True)
+    return checked_read_tree(run_dir, purpose=purpose)
 
 # Configure logging (stream only at import; file handler attached lazily)
 logging.basicConfig(
@@ -45,7 +76,12 @@ def _ensure_file_logging():
     if _file_handler_added:
         return
     try:
-        fh = logging.FileHandler(os.path.join(_andes_runs_dir(), 'mcp_server.log'))
+        log_path = checked_path(
+            os.path.join(_ensure_andes_runs_dir(), 'mcp_server.log'),
+            purpose="generated ANDES log path",
+            for_write=True,
+        )
+        fh = logging.FileHandler(log_path)
         fh.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
         logging.getLogger().addHandler(fh)
     except Exception:
@@ -69,6 +105,10 @@ def run_power_flow(file_path: str) -> Dict[str, Any]:
         Dict containing power flow results and output information
     """
     try:
+        file_path = checked_path(file_path, purpose="file_path")
+    except PathNotAllowed as exc:
+        return {"status": "error", "message": str(exc)}
+    try:
         _ensure_file_logging()
         # Convert to absolute path if not already
         abs_file_path = os.path.abspath(file_path)
@@ -79,11 +119,17 @@ def run_power_flow(file_path: str) -> Dict[str, Any]:
             }
 
         # Create a unique directory for this run
-        run_dir = os.path.join(_andes_runs_dir(), f"pf_{Path(abs_file_path).stem}")
-        os.makedirs(run_dir, exist_ok=True)
+        run_dir = _prepare_run_dir(
+            f"pf_{Path(abs_file_path).stem}",
+            "generated power flow output directory",
+        )
         
         # Copy input file to run directory
-        input_file = os.path.join(run_dir, os.path.basename(abs_file_path))
+        input_file = checked_path(
+            os.path.join(run_dir, os.path.basename(abs_file_path)),
+            purpose="generated ANDES input copy",
+            for_write=True,
+        )
         shutil.copy2(abs_file_path, input_file)
         
         # Save current directory and change to run directory
@@ -158,8 +204,10 @@ def run_time_domain_simulation(step_size: float = 0.01, t_end: float = 10.0) -> 
         ss = system_state['current_system']
 
         # Create a unique directory for this run
-        run_dir = os.path.join(_andes_runs_dir(), f"tds_{int(t_end)}s")
-        os.makedirs(run_dir, exist_ok=True)
+        run_dir = _prepare_run_dir(
+            f"tds_{int(t_end)}s",
+            "generated time domain output directory",
+        )
         
         # Save current directory and change to run directory
         original_dir = os.getcwd()
@@ -225,6 +273,10 @@ def run_eigenvalue_analysis(file_path: str) -> Dict[str, Any]:
         Dict containing the eigenvalue analysis results
     """
     try:
+        file_path = checked_path(file_path, purpose="file_path")
+    except PathNotAllowed as exc:
+        return {"status": "error", "message": str(exc)}
+    try:
         _ensure_file_logging()
         # Convert to absolute path if relative
         abs_file_path = os.path.abspath(file_path)
@@ -236,8 +288,10 @@ def run_eigenvalue_analysis(file_path: str) -> Dict[str, Any]:
             }
 
         # Create a unique directory for this run
-        run_dir = os.path.join(_andes_runs_dir(), f"eig_{Path(abs_file_path).stem}")
-        os.makedirs(run_dir, exist_ok=True)
+        run_dir = _prepare_run_dir(
+            f"eig_{Path(abs_file_path).stem}",
+            "generated eigenvalue output directory",
+        )
         
         # Save current directory and change to run directory
         original_dir = os.getcwd()
@@ -334,22 +388,19 @@ def get_system_info() -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# powerio bridge: load any powerio readable case into ANDES.
-# powerio parses MATPOWER .m, PSS/E .raw (v33), PowerWorld .aux, PowerModels
-# JSON, and egret JSON; the case is staged as a MATPOWER file that ANDES loads
-# natively via run_power_flow. powerio is an optional extra, so the tools
-# degrade gracefully when it is missing.
+# PowerIO interchange: resolve one balanced state, then stage MATPOWER text for
+# ANDES to load natively through run_power_flow.
 # ---------------------------------------------------------------------------
-
-_POWERIO_HINT = "powerio not installed: pip install 'powerio[mcp,matrix]'"
 
 
 @mcp.tool()
 def load_network_from_json(
     network_json: str,
     out_path: str,
+    operating_point: Optional[int] = None,
+    study_commit: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """Stage a powerio JSON transport string as a MATPOWER file for ANDES.
+    """Stage PowerIO model JSON or one package state as MATPOWER for ANDES.
 
     Accepts the ``json`` string returned by the powerio server's parse tool.
     Converts the network to MATPOWER format, writes it to out_path (use a .m
@@ -360,16 +411,23 @@ def load_network_from_json(
     Args:
         network_json: The JSON transport string from powerio
         out_path: Destination for the MATPOWER case file (.m)
+        operating_point: Optional package operating-point index to materialize
+        study_commit: Optional package study-commit index to materialize
 
     Returns:
         Dict with status, case_file path, component counts, and fidelity warnings
     """
     try:
-        import powerio
-    except ImportError:
-        return {"status": "error", "message": _POWERIO_HINT}
+        out_path = checked_path(out_path, purpose="out_path", for_write=True)
+    except PathNotAllowed as exc:
+        return {"status": "error", "message": str(exc)}
     try:
-        case = powerio.from_json(network_json)
+        prepared = resolve_solver_case(
+            network_json=network_json,
+            operating_point=operating_point,
+            study_commit=study_commit,
+        )
+        case = prepared.network
         conv = case.to_format("matpower")
         abs_out = os.path.abspath(out_path)
         with open(abs_out, "w") as fh:
@@ -385,7 +443,8 @@ def load_network_from_json(
             "branches": case.n_branches,
             "generators": case.n_gens,
         },
-        "warnings": list(conv.warnings),
+        "warnings": list(prepared.warnings) + list(conv.warnings),
+        **({"package": prepared.package} if prepared.package is not None else {}),
     }
 
 
@@ -394,6 +453,8 @@ def load_network_from_any(
     file_path: str,
     out_path: str,
     source_format: Optional[str] = None,
+    operating_point: Optional[int] = None,
+    study_commit: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Stage any powerio readable case as a MATPOWER file for ANDES.
 
@@ -407,16 +468,28 @@ def load_network_from_any(
         out_path: Destination for the MATPOWER case file (.m)
         source_format: Input format name (matpower, powermodels-json, egret-json,
             psse, powerworld); inferred from the file extension when omitted
+        operating_point: Optional package operating-point index to materialize
+        study_commit: Optional package study-commit index to materialize
 
     Returns:
         Dict with status, case_file path, component counts, and fidelity warnings
     """
     try:
-        import powerio
-    except ImportError:
-        return {"status": "error", "message": _POWERIO_HINT}
+        file_path = checked_path(file_path, purpose="file_path")
+    except PathNotAllowed as exc:
+        return {"status": "error", "message": str(exc)}
     try:
-        case = powerio.parse_file(file_path, source_format)
+        out_path = checked_path(out_path, purpose="out_path", for_write=True)
+    except PathNotAllowed as exc:
+        return {"status": "error", "message": str(exc)}
+    try:
+        prepared = resolve_solver_case(
+            file_path=file_path,
+            source_format=source_format,
+            operating_point=operating_point,
+            study_commit=study_commit,
+        )
+        case = prepared.network
         conv = case.to_format("matpower")
         abs_out = os.path.abspath(out_path)
         with open(abs_out, "w") as fh:
@@ -434,7 +507,8 @@ def load_network_from_any(
             "branches": case.n_branches,
             "generators": case.n_gens,
         },
-        "warnings": list(conv.warnings),
+        "warnings": list(prepared.warnings) + list(conv.warnings),
+        **({"package": prepared.package} if prepared.package is not None else {}),
     }
 
 

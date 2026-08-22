@@ -3,11 +3,17 @@
 from pathlib import Path
 from typing import Any, Dict
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer as FastMCP
 from py_dss_toolkit import dss_tools
 
 from core import state
 from core.engine import dss
+from powermcp.sandbox import (
+    PathNotAllowed,
+    allowed_roots,
+    checked_path,
+    checked_read_tree,
+)
 from utils.responses import _err, _ok
 
 
@@ -20,6 +26,15 @@ def compile_opendss_file(dss_file: str, force_recompile: bool = False) -> Dict[s
 
     Returns dss_file, circuit_readiness, circuit_loaded, and whether the compile was skipped.
     """
+    try:
+        dss_file = checked_path(dss_file, purpose="dss_file")
+        # A DSS model may Redirect/Compile sibling files.  Preflight the whole
+        # project tree when containment is enabled; preserve the historical
+        # single-file behavior when the operator has not configured roots.
+        if allowed_roots():
+            checked_read_tree(str(Path(dss_file).parent), purpose="DSS input tree")
+    except PathNotAllowed as exc:
+        return _err(str(exc))
     resolved = str(Path(dss_file).resolve())
     if (
         state.circuit_loaded

@@ -2,10 +2,22 @@
 
 from __future__ import annotations
 
+import importlib.util
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10
+    import tomli as tomllib
+
 import pytest
 
 from powermcp import registry
+from powermcp import __version__
 from powermcp.registry import CORE, TOOLS, Tool
+
+
+def test_package_versions_match():
+    project = tomllib.loads((registry.REPO_ROOT / "pyproject.toml").read_text())["project"]
+    assert project["version"] == __version__ == "0.3.0"
 
 
 def test_core_tools_present_and_have_no_extra():
@@ -22,11 +34,14 @@ def test_every_noncore_tool_has_an_extra():
 
 def test_run_kind_consistency():
     for t in TOOLS.values():
-        assert t.run_kind in ("script", "module")
+        assert t.run_kind in ("script", "module", "package")
         if t.run_kind == "script":
             assert t.entry_rel and not t.module
         else:
             assert t.module and not t.entry_rel
+        # "package" means the server ships in its own distribution, so this
+        # repo bundles no directory for it.
+        assert (t.server_dir is None) == (t.run_kind == "package")
 
 
 def test_closed_source_path_tools_declare_config_keys():
@@ -44,8 +59,12 @@ def test_windows_only_flags():
         assert TOOLS[name].windows_only is False
 
 
-def test_resolve_server_dir_exists_for_all_tools():
+def test_resolve_server_dir_exists_for_bundled_tools():
     for t in TOOLS.values():
+        if t.server_dir is None:
+            with pytest.raises(ValueError):
+                t.resolve_server_dir()
+            continue
         d = t.resolve_server_dir()
         assert d.is_dir(), f"{t.name}: {d} is not a directory"
 
@@ -55,6 +74,15 @@ def test_resolve_entry_script_exists_for_script_tools():
         if t.run_kind == "script":
             script = t.resolve_entry_script()
             assert script.is_file(), f"{t.name}: missing entry {script}"
+
+
+def test_packaged_tools_are_importable():
+    for t in TOOLS.values():
+        if t.run_kind != "package":
+            continue
+        # No path resolution to do: pip put the module where it goes, and the
+        # doctor's probe already reports whether it is installed.
+        assert importlib.util.find_spec(t.module.split(".")[0]) is not None
 
 
 def test_module_tools_have_resolvable_roots():

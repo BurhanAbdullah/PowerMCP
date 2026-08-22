@@ -17,10 +17,23 @@ Conventions (shared with peer PowerMCP tools):
 from __future__ import annotations
 
 import logging
+import sys
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import surge
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer as FastMCP
+
+_repo_root = str(Path(__file__).resolve().parents[1])
+_repo_root_added = _repo_root not in sys.path
+if _repo_root_added:
+    sys.path.insert(0, _repo_root)
+try:
+    from powermcp.sandbox import PathNotAllowed, checked_path, staged_directory_write
+finally:
+    if _repo_root_added:
+        sys.path.remove(_repo_root)
+del _repo_root, _repo_root_added
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -89,6 +102,10 @@ def load_network(file_path: str, format: Optional[str] = None) -> Dict[str, Any]
     Returns:
         {"status", "message", "results": {network summary}}.
     """
+    try:
+        file_path = checked_path(file_path, purpose="file_path")
+    except PathNotAllowed as exc:
+        return {"status": "error", "message": str(exc)}
     global _current_net, _last_pf_result
     try:
         _current_net = surge.load(file_path, format=format) if format else surge.load(file_path)
@@ -115,6 +132,10 @@ def save_network(file_path: str) -> Dict[str, Any]:
     Returns:
         {"status", "message"}.
     """
+    try:
+        file_path = checked_path(file_path, purpose="file_path", for_write=True)
+    except PathNotAllowed as exc:
+        return {"status": "error", "message": str(exc)}
     try:
         net = _require_network()
         surge.save(net, file_path)
@@ -903,40 +924,48 @@ def export_tables(output_dir: str) -> Dict[str, Any]:
         {"status", "message", "results": {"files": [...], "rows": {...}}}.
     """
     try:
+        output_dir = checked_path(output_dir, purpose="output_dir", for_write=True)
+    except PathNotAllowed as exc:
+        return {"status": "error", "message": str(exc)}
+    try:
         import csv as _csv
         import os
         net = _require_network()
-        os.makedirs(output_dir, exist_ok=True)
-        written: List[str] = []
-        rows: Dict[str, int] = {}
-        for fname, accessor in (
-            ("buses.csv", "bus_dataframe"),
-            ("branches.csv", "branch_dataframe"),
-            ("generators.csv", "gen_dataframe"),
-            ("loads.csv", "loads_dataframe"),
-            ("shunts.csv", "shunts_dataframe"),
-        ):
-            payload = getattr(net, accessor)()
-            path = os.path.join(output_dir, fname)
-            # Pandas path: real DataFrame with to_csv
-            if hasattr(payload, "to_csv"):
-                payload.to_csv(path, index=True)
-                n_rows = int(payload.shape[0])
-            else:
-                # Dict-of-columns fallback (pandas not installed)
-                columns = list(payload.keys())
-                cols_data = [list(payload[c]) for c in columns]
-                n_rows = len(cols_data[0]) if cols_data else 0
-                with open(path, "w", newline="") as f:
-                    w = _csv.writer(f)
-                    w.writerow(columns)
-                    for i in range(n_rows):
-                        w.writerow([cols_data[j][i] for j in range(len(columns))])
-            written.append(path)
-            rows[fname] = n_rows
+
+        def write_tables(staging: str) -> Dict[str, Any]:
+            written: List[str] = []
+            rows: Dict[str, int] = {}
+            for fname, accessor in (
+                ("buses.csv", "bus_dataframe"),
+                ("branches.csv", "branch_dataframe"),
+                ("generators.csv", "gen_dataframe"),
+                ("loads.csv", "loads_dataframe"),
+                ("shunts.csv", "shunts_dataframe"),
+            ):
+                payload = getattr(net, accessor)()
+                path = os.path.join(staging, fname)
+                if hasattr(payload, "to_csv"):
+                    payload.to_csv(path, index=True)
+                    n_rows = int(payload.shape[0])
+                else:
+                    columns = list(payload.keys())
+                    cols_data = [list(payload[c]) for c in columns]
+                    n_rows = len(cols_data[0]) if cols_data else 0
+                    with open(path, "w", newline="") as f:
+                        writer = _csv.writer(f)
+                        writer.writerow(columns)
+                        for i in range(n_rows):
+                            writer.writerow(
+                                [cols_data[j][i] for j in range(len(columns))]
+                            )
+                written.append(path)
+                rows[fname] = n_rows
+            return {"dir": staging, "files": written, "rows": rows}
+
+        result = staged_directory_write(output_dir, True, write_tables)
         return _ok(
-            f"{len(written)} CSV files written to {output_dir}",
-            {"files": written, "rows": rows},
+            f"{len(result['files'])} CSV files written to {output_dir}",
+            {"files": result["files"], "rows": result["rows"]},
         )
     except RuntimeError as exc:
         return _err(str(exc))

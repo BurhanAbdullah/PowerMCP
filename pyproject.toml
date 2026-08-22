@@ -10,7 +10,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "powermcp"
-version = "0.2.1"
+version = "0.3.0"
 description = "MCP servers for power-system software (PowerWorld, OpenDSS, PSS/E, pandapower, PyPSA, and more)"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -28,23 +28,32 @@ classifiers = [
 ]
 
 # CORE — always installed by `pip install powermcp`.
-# Only pandapower + PyPSA engines (per project decision); the rest is the MCP
-# runtime plus the CLI/installer toolkit.
+# The core install carries pandapower, PyPSA, PowerIO, the MCP runtime, and the
+# CLI/installer toolkit.
 dependencies = [
     "pandapower",
-    "pypsa>=0.25.0",
+    # 0.35.2 is the last Python 3.10-compatible modern optimizer line and the
+    # first floor we verify against today's dependency resolver. Python 3.11+
+    # naturally resolves to PyPSA 1.x; keep the next major opt-in.
+    "pypsa>=0.35.2,<2",
     "numpy>=1.24",
-    "pandas>=2.0",
-    "mcp>=1.0",
-    # powerio is the cross-server exchange substrate (the pandapower/Egret/PyPSA/
-    # ANDES bridges build on its JSON transport), and is cheap to require: abi3
-    # wheels for five platforms, zero required runtime deps, [mcp,matrix] adding
-    # only scipy (already transitive via pandapower) on top of mcp+numpy.
-    # >=0.4.0: the MCP tool surface is:
-    # convert, save, summary, parse, normalize, matrix, diagnostics, display.
-    # powerio_mcp.py re-exports exactly that surface with no local overlay.
-    "powerio[mcp,matrix]>=0.4.0",
+    # pandapower's PYPOWER converter does not support pandas 3 yet.
+    "pandas>=2.0,<3",
+    # mcp 2.0 moved the server class from mcp.server.fastmcp.FastMCP to
+    # mcp.server.mcpserver.MCPServer; every vendored server in this repo now
+    # imports the latter, so the floor tracks that, not just powerio's own
+    # [mcp] extra requirement (mcp>=2,<3).
+    "mcp>=2,<3",
+    # powerio supplies the conversion server, package model, native solver
+    # writers, shared JSON transports, and path policy used by the bridges.
+    # PowerMCP uses APIs introduced in powerio 0.9.0.
+    # powerio ships the server itself (`python -m powerio.mcp`), so this repo
+    # bundles no copy of it and `powermcp run powerio` runs powerio's.
+    "powerio[mcp,matrix]>=0.9.0,<1",
     # CLI / installer toolkit:
+    # packaging: the doctor compares an installed version against the floor
+    # declared right here, so it has to read a version specifier.
+    "packaging>=23",
     "typer>=0.12",
     "questionary>=2.0",
     "rich>=13",
@@ -72,7 +81,7 @@ pscad      = ["psutil"]                         # mhi-pscad pulled by the `pscad
 pscad-windows = ["psutil", "mhi-pscad; sys_platform == 'win32'", "mhi-psout; sys_platform == 'win32'"]
 psse       = []                                 # vendor `psspy` not on PyPI — path captured in config.toml
 pslf       = ["pandas"]                         # vendor `PSLF_PYTHON` not on PyPI — path captured in config.toml
-powerfactory = ["fastmcp>=2.0", "numpy>=1.26", "matplotlib>=3.8", "pandas>=1.5"]  # vendor `powerfactory` not on PyPI
+powerfactory = ["numpy>=1.26", "matplotlib>=3.8", "pandas>=1.5"]  # vendor `powerfactory` not on PyPI
 # --- convenience groups ---
 opensource = ["powermcp[andes]", "powermcp[egret]", "powermcp[opendss]", "powermcp[ltspice]", "powermcp[surge]", "powermcp[hope]"]
 windows    = ["powermcp[pscad-windows]", "powermcp[powerworld]", "powermcp[powerfactory]", "powermcp[psse]", "powermcp[pslf]"]
@@ -101,7 +110,6 @@ packages = ["powermcp"]
 "surge"        = "powermcp/_servers/surge"
 "OpenDSS"      = "powermcp/_servers/OpenDSS"
 "HOPE"         = "powermcp/_servers/HOPE"
-"powerio"      = "powermcp/_servers/powerio"
 "PSCAD"        = "powermcp/_servers/PSCAD"
 "PSSE"         = "powermcp/_servers/PSSE"
 "PSLF"         = "powermcp/_servers/PSLF"
@@ -114,7 +122,7 @@ packages = ["powermcp"]
 [tool.hatch.build.targets.sdist]
 include = [
     "powermcp",
-    "pandapower", "PyPSA", "ANDES", "Egret", "surge", "OpenDSS", "HOPE", "powerio",
+    "pandapower", "PyPSA", "ANDES", "Egret", "surge", "OpenDSS", "HOPE",
     "PSCAD", "PSSE", "PSLF", "PowerWorld", "PowerFactory", "LTSpice",
     "README.md", "LICENSE", "pyproject.toml",
 ]

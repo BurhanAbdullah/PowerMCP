@@ -126,7 +126,7 @@ These tools wrap commercial or locally-installed software, so PowerMCP stores th
 
 ### Case compilation between servers (PowerIO)
 
-PowerMCP ships a compiler server backed by [powerio](https://github.com/eigenergy/powerio) as a **core dependency** (no extra needed). It parses transmission and distribution formats into canonical JSON transports, converts between target artifacts with fidelity warnings, and builds the sparse matrices solvers need (B', B'', Y_bus, PTDF, LODF, Laplacian, LACPF).
+PowerMCP runs the MCP server that [powerio](https://github.com/eigenergy/powerio) ships in its own wheel, as a **core dependency** (no extra needed) — `powermcp run powerio` is `python -m powerio.mcp`, so a powerio release that adds tools or changes their implementation needs no local server copy. It parses transmission and distribution formats into canonical JSON transports, converts between target artifacts with fidelity warnings, and builds the sparse matrices solvers need (B', B'', Y_bus, PTDF, LODF, Laplacian, LACPF).
 
 Its JSON transport is the exchange format between PowerMCP servers: parse a case once, pass the returned `json` string between tool calls, and save runtime artifacts only when a backend needs a file. Existing `json` transport workflows remain supported.
 
@@ -139,7 +139,7 @@ matrix(kind="ptdf", json=...)                      # powerio server builds matri
 save(to_format="psse", out_path="case9.raw", json=...)  # stage a file for path only servers
 ```
 
-PowerIO 0.4.0 also supports the `.pio.json` package transport, which carries the model plus package metadata and structured diagnostics:
+PowerIO also supports the `.pio.json` package transport, which carries the model plus package metadata and structured diagnostics:
 
 ```
 parsed = parse(path="case9.raw", transport="package")
@@ -149,6 +149,36 @@ matrix(kind="ptdf", package_json=pkg)
 save(to_format="psse", out_path="case9.raw", package_json=pkg)
 diagnostics(package_json=pkg)  # package diagnostics summary and structured findings
 ```
+
+A package can also retain provenance and source maps, stable row identities,
+validation state, operating-point series, cumulative study commits, and
+lowering history. The canonical PowerIO MCP tools continue to own that package
+lifecycle. PowerMCP uses the package only at the solver boundary:
+
+```
+# A static package loads directly.
+import_case_from_json(network_json=pkg, output_path="case9.nc")
+
+# A package with one or more stored states requires an explicit selection.
+# PowerIO v0.9 materializes and validates the selected state before PowerMCP
+# creates the solver model.
+import_case_from_json(
+    network_json=pkg,
+    output_path="dispatch.nc",
+    operating_point=3,
+)
+load_network_from_json(network_json=pkg, study_commit=1)  # pandapower
+```
+
+The same `operating_point` and `study_commit` selectors are available on the
+PowerIO import tools for pandapower, PyPSA, ANDES, and Egret. PowerMCP rejects
+unselected stored state data instead of silently solving the package's base model.
+Study materialization honors the package's `base_operating_point`. Balanced
+solvers also reject multiconductor packages until the caller explicitly lowers
+them with PowerIO, so a lossy distribution-to-transmission reduction is never
+implicit. PyPSA and pandapower use PowerIO's native writers, preserving the
+supported cost and in-service metadata without PowerMCP rebuilding PYPOWER
+tables.
 
 `summary` returns the canonical nested shape used by PowerIO and PowerMCP: counts live under `elements` (`elements.buses`, `elements.branches`, `elements.generators`) and topology metadata lives under `topology` (`topology.connected_components`, `topology.reference_buses`).
 
@@ -161,15 +191,16 @@ compile_opendss_file(dss_file="feeder.dss")
 
 PowerWorld `.pwd` display files decode separately via `display(path=...)`, which returns the diagram canvas and each substation's display coordinates. The display geometry is distinct from the `.pwb`/`.aux` case data.
 
-PowerIO MCP tools accept local paths and `file://` URIs. Nonlocal URI schemes are rejected. Set `POWERIO_MCP_ALLOWED_ROOTS` to an `os.pathsep` separated list of directories to constrain MCP reads and writes.
+PowerIO MCP tools accept local paths and `file://` URIs. Nonlocal URI schemes are rejected. Set `POWERIO_MCP_ALLOWED_ROOTS` to an `os.pathsep` separated list of directories to constrain paths handled by the shared PowerIO sandbox. PyPSA preflights a NetCDF file or every descendant of a CSV directory before constructing a network, and both explicit and legacy-derived CSV import destinations are checked before writing. PyPSA and surge install directory outputs from a private sibling staging directory. Generated run directories exposed by the bundled servers use the same path policy. Put `POWERMCP_HOME` under an allowed root if ANDES, Egret, or LTSpice should write run artifacts while containment is enabled. These are path preflight checks; another process can replace a checked entry before a backend opens it.
 
 ### Running from a clone (without installing)
 
-Every server is still a standalone script. Clone the repo and run any server directly for use in Claude Desktop:
+Every bundled server is still a standalone script. Clone the repo and run any server directly for use in Claude Desktop:
 
 ```bash
 python pandapower/panda_mcp.py
 python PSSE/psse_mcp.py          # uses ~/.powermcp/config.toml if present, else legacy default paths
+python -m powerio.mcp            # powerio ships its own server; the clone holds no copy
 ```
 
 ### Testing with your LLMs

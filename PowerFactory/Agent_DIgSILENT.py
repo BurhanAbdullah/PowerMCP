@@ -23,6 +23,17 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+_repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_repo_root_added = _repo_root not in sys.path
+if _repo_root_added:
+    sys.path.insert(0, _repo_root)
+try:
+    from powermcp.sandbox import checked_path, ensure_checked_directory
+finally:
+    if _repo_root_added:
+        sys.path.remove(_repo_root)
+del _repo_root, _repo_root_added
+
 # ── PowerFactory Python path ──────────────────────────────────────
 # The bundled vendor `powerfactory` module lives next to the PowerFactory
 # installation. Its directory is resolved lazily (from powermcp config, with an
@@ -108,6 +119,7 @@ class SimulationConfig:
     @classmethod
     def from_json(cls, path: str) -> "SimulationConfig":
         """Load config from a JSON file, overriding only the keys present."""
+        path = checked_path(path, purpose="config path")
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         return cls(**{k: v for k, v in data.items()
@@ -159,6 +171,18 @@ class Logger:
 log = Logger()
 
 
+def _safe_path_label(value: str, default: str = "run") -> str:
+    label = re.sub(r"[^A-Za-z0-9_.-]+", "_", value or default)
+    if label in {".", ".."}:
+        return default
+    label = label.replace("..", "_").strip(".")
+    return label or default
+
+
+def _ensure_output_directory(path: str, purpose: str) -> str:
+    return ensure_checked_directory(path, purpose=purpose)
+
+
 # ══════════════════════════════════════════════════════════════════
 # DIGSILENT AGENT
 # ══════════════════════════════════════════════════════════════════
@@ -204,8 +228,15 @@ class DIgSILENTAgent:
     def _ensure_run_output_dir(self) -> str:
         """Create and return the run-specific output subdirectory."""
         if not self.run_output_dir:
-            safe_label = re.sub(r"[^A-Za-z0-9_.-]+", "_", self.cfg.run_label)
-            self.run_output_dir = os.path.join(self.cfg.output_dir, safe_label)
+            safe_label = _safe_path_label(self.cfg.run_label)
+            base_dir = _ensure_output_directory(
+                self.cfg.output_dir, purpose="configured output directory"
+            )
+            self.run_output_dir = checked_path(
+                os.path.join(base_dir, safe_label),
+                purpose="generated run output directory",
+                for_write=True,
+            )
             os.makedirs(self.run_output_dir, exist_ok=True)
             log.info(f"Run output directory: {self.run_output_dir}")
         return self.run_output_dir
@@ -521,7 +552,10 @@ class DIgSILENTAgent:
 
             filename = os.path.join(
                 run_dir,
-                f"{self.cfg.run_label}_RMS.csv"
+                f"{_safe_path_label(self.cfg.run_label)}_RMS.csv"
+            )
+            filename = checked_path(
+                filename, purpose="generated RMS CSV path", for_write=True
             )
 
             # -- Use ComRes (PowerFactory built-in CSV exporter) ------
@@ -559,9 +593,13 @@ class DIgSILENTAgent:
                 raise RuntimeError("No active project found")
 
             run_dir = self._ensure_run_output_dir()
-            safe_label = re.sub(r"[^A-Za-z0-9_.-]+", "_", self.cfg.run_label)
+            safe_label = _safe_path_label(self.cfg.run_label)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            pfd_path = os.path.join(run_dir, f"{safe_label}_{timestamp}.pfd")
+            pfd_path = checked_path(
+                os.path.join(run_dir, f"{safe_label}_{timestamp}.pfd"),
+                purpose="generated PFD path",
+                for_write=True,
+            )
 
             pfd_export = self.app.GetFromStudyCase("ComPfdexport")
             if pfd_export is None:
@@ -587,11 +625,13 @@ class DIgSILENTAgent:
     def generate_standard_plots(self, csv_path: str) -> tuple[bool, str]:
         log.section("STEP 8 — Generate Standard Plots")
         try:
+            csv_path = checked_path(csv_path, purpose="results CSV path")
             if not os.path.exists(csv_path):
                 raise RuntimeError(f"CSV file not found: {csv_path}")
 
             import pandas as pd
             run_dir = self._ensure_run_output_dir()
+            safe_label = _safe_path_label(self.cfg.run_label)
 
             # Detect delimiter from the first line; PF exports are usually ';'.
             with open(csv_path, "r", encoding="utf-8", errors="replace") as fh:
@@ -678,7 +718,11 @@ class DIgSILENTAgent:
                 ax.grid(True, alpha=0.3)
                 ax.legend(loc='best', fontsize=9)
                 fig.tight_layout()
-                voltage_plot = os.path.join(run_dir, f"{self.cfg.run_label}_voltages.png")
+                voltage_plot = checked_path(
+                    os.path.join(run_dir, f"{safe_label}_voltages.png"),
+                    purpose="generated voltage plot path",
+                    for_write=True,
+                )
                 fig.savefig(voltage_plot, dpi=150, bbox_inches='tight')
                 plt.close(fig)
                 log.ok(f"Voltage plot saved → {voltage_plot}")
@@ -696,7 +740,11 @@ class DIgSILENTAgent:
                 ax.grid(True, alpha=0.3)
                 ax.legend(loc='best', fontsize=9)
                 fig.tight_layout()
-                speed_plot = os.path.join(run_dir, f"{self.cfg.run_label}_gen_speeds.png")
+                speed_plot = checked_path(
+                    os.path.join(run_dir, f"{safe_label}_gen_speeds.png"),
+                    purpose="generated speed plot path",
+                    for_write=True,
+                )
                 fig.savefig(speed_plot, dpi=150, bbox_inches='tight')
                 plt.close(fig)
                 log.ok(f"Generator speed plot saved → {speed_plot}")
@@ -748,6 +796,7 @@ class DIgSILENTAgent:
         -------
         (success, message)
         """
+        file_path = checked_path(file_path, purpose="file_path")
         global pf
         if pf is None:
             _ensure_powerfactory_on_path()
@@ -909,13 +958,24 @@ class DIgSILENTAgent:
     ) -> tuple[bool, str]:
         """Export a point-in-time load-flow snapshot to CSV."""
         try:
-            safe_label = re.sub(r"[^A-Za-z0-9_.-]+", "_", run_label or "run")
-            base_dir = output_dir or r"C:\RMS_Results"
-            run_dir = os.path.join(base_dir, safe_label)
+            safe_label = _safe_path_label(run_label)
+            base_dir = _ensure_output_directory(
+                output_dir or r"C:\RMS_Results",
+                purpose="configured output directory",
+            )
+            run_dir = checked_path(
+                os.path.join(base_dir, safe_label),
+                purpose="generated load flow directory",
+                for_write=True,
+            )
             os.makedirs(run_dir, exist_ok=True)
 
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            csv_path = os.path.join(run_dir, f"{safe_label}_loadflow_{timestamp}.csv")
+            csv_path = checked_path(
+                os.path.join(run_dir, f"{safe_label}_loadflow_{timestamp}.csv"),
+                purpose="generated load flow CSV path",
+                for_write=True,
+            )
 
             fieldnames = [
                 "element_type",
@@ -1290,4 +1350,3 @@ if __name__ == "__main__":
     if report["csv_path"]:
         print(f"  CSV output:      {report['csv_path']}")
     print("═" * 60)
-
