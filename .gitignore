@@ -115,3 +115,7 @@ htmlcov/
 
 # PSCAD generated docs (can be re-synced)
 PSCAD/docs/
+
+# GenX run artifacts, when a case or log dir is kept inside the checkout
+GenX/run_logs/
+GenX/plots/

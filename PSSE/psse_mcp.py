@@ -4,8 +4,19 @@ import json
 import io
 from pathlib import Path
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer as FastMCP
 from typing import Dict, List, Optional, Any
+
+_repo_root = str(Path(__file__).resolve().parents[1])
+_repo_root_added = _repo_root not in sys.path
+if _repo_root_added:
+    sys.path.insert(0, _repo_root)
+try:
+    from powermcp.sandbox import PathNotAllowed, checked_path
+finally:
+    if _repo_root_added:
+        sys.path.remove(_repo_root)
+del _repo_root, _repo_root_added
 
 # Initialize MCP server
 mcp = FastMCP("PSSE 35+ Positive Sequence Load Flow Program")
@@ -67,6 +78,121 @@ def _ensure_psse():
 
 # Path to JSON command reference files
 JSON_DIR = Path(__file__).parent / "psspy_command_json"
+PATH_PARAMETER_METADATA = Path(__file__).parent / "psspy_path_parameters.json"
+
+
+def _load_path_parameter_metadata() -> Dict[str, Dict[str, str]]:
+    """Load the audited path parameters for the bundled command specs.
+
+    `commands` names the arguments to contain. Its sibling `reviewed_non_paths`
+    records the ones that read as paths but are not, so the test suite can hold
+    every spec parameter to a decision rather than to a name heuristic.
+    """
+    with open(PATH_PARAMETER_METADATA, encoding="utf-8") as f:
+        document = json.load(f)
+    if (
+        document.get("schema") != 1
+        or not isinstance(document.get("commands"), dict)
+        or not isinstance(document.get("reviewed_non_paths"), dict)
+    ):
+        raise RuntimeError("invalid PSS/E path parameter metadata")
+    return document["commands"]
+
+
+_PATH_PARAMETERS = _load_path_parameter_metadata()
+
+
+# These APIs load, execute, or activate programs, native libraries, Python
+# callbacks, user extensions, or PSS/E command files. Path containment does not
+# make executable input safe for the generic MCP dispatcher.
+_PROHIBITED_PSSPY_COMMANDS = frozenset(
+    {
+        "accc_ras",
+        "accc_ras_2",
+        "addconditionelement",
+        "addcontingencyelement",
+        "addmodellibrary",
+        "addpythonconditionelement",
+        "addpythoncontingencyelement",
+        "addpythonremedialactionelement",
+        "addremedialactionelement",
+        "allow_pssuserpf",
+        "append_ras",
+        "dropmodellibrary",
+        "dropmodelprogram",
+        "getmodfunclist",
+        "launch_program",
+        "read_ras",
+        "retry_pssuserpf",
+        "runiplanfile",
+        "runrspnsfile",
+        "set_input_dev",
+        "setdiagautofile",
+        "user",
+    }
+)
+
+
+def _command_spec_path(function_name: str) -> Path:
+    """Resolve one bundled command spec without treating its name as a path."""
+    if not function_name.isascii() or not function_name.isidentifier():
+        raise ValueError("function_name must be an ASCII Python identifier")
+    return JSON_DIR / f"{function_name}.json"
+
+
+def _checked_path_value(value: Any, *, purpose: str, sequence: bool) -> Any:
+    """Check one audited scalar path or sequence of paths."""
+    if isinstance(value, str):
+        if value.strip() in {"", "*"}:
+            return value
+        return checked_path(value, purpose=purpose, for_write=True)
+    if sequence and isinstance(value, list):
+        return [
+            _checked_path_value(
+                item, purpose=f"{purpose}[{index}]", sequence=True
+            )
+            for index, item in enumerate(value)
+        ]
+    if sequence and isinstance(value, tuple):
+        return tuple(
+            _checked_path_value(
+                item, purpose=f"{purpose}[{index}]", sequence=True
+            )
+            for index, item in enumerate(value)
+        )
+    return value
+
+
+def _checked_path_at_index(value: Any, *, purpose: str, index: int) -> Any:
+    """Check one path field in a documented structured sequence."""
+    if not isinstance(value, (list, tuple)) or len(value) <= index:
+        return value
+    checked = list(value)
+    checked[index] = _checked_path_value(
+        checked[index], purpose=f"{purpose}[{index}]", sequence=False
+    )
+    return tuple(checked) if isinstance(value, tuple) else checked
+
+
+def _guard_psspy_path_arguments(
+    spec: Dict[str, Any], arguments: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Apply containment to paths named in the audited spec metadata."""
+    guarded = dict(arguments)
+    function_name = str(spec.get("function_name", ""))
+    parameters = _PATH_PARAMETERS.get(function_name, {})
+    for name, kind in parameters.items():
+        if name in guarded:
+            purpose = f"arguments.{name}"
+            if kind == "path-index-2":
+                guarded[name] = _checked_path_at_index(
+                    guarded[name], purpose=purpose, index=2
+                )
+            else:
+                guarded[name] = _checked_path_value(
+                    guarded[name], purpose=purpose, sequence=kind == "paths"
+                )
+    return guarded
 
 
 def _lookup_error(ierr, error_codes):
@@ -409,6 +535,10 @@ def open_case(case: str) -> Dict[str, Any]:
         Dict with status and case information
     """
     try:
+        case = checked_path(case, purpose="case")
+    except PathNotAllowed as exc:
+        return {"status": "error", "message": str(exc)}
+    try:
         _ensure_psse()
         ierr = psspy.case(case)
         err, bus_data = psspy.abuscount(flag=2)
@@ -458,7 +588,10 @@ def solve_case() -> Dict[str, Any]:
 @mcp.tool()
 def run_psspy_command(function_name: str, arguments: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
-    Execute any psspy API command by name, using its JSON reference spec.
+    Execute an allowed psspy API command using its bundled JSON reference spec.
+
+    Commands that load or execute external code are not available through this
+    generic surface.
 
     Loads the command definition from the JSON reference, determines the
     return type, calls the appropriate handler, and returns structured output.
@@ -475,8 +608,20 @@ def run_psspy_command(function_name: str, arguments: Optional[Dict[str, Any]] = 
     if arguments is None:
         arguments = {}
 
+    if function_name in _PROHIBITED_PSSPY_COMMANDS:
+        return {
+            "status": "error",
+            "message": (
+                f"psspy.{function_name} is not available through "
+                "run_psspy_command"
+            ),
+        }
+
     # Load the JSON spec for this function
-    spec_path = JSON_DIR / f"{function_name}.json"
+    try:
+        spec_path = _command_spec_path(function_name)
+    except ValueError as exc:
+        return {"status": "error", "message": str(exc)}
     if not spec_path.exists():
         return {"status": "error", "message": f"No JSON spec found for '{function_name}'. Check _index.json for available functions."}
 
@@ -485,6 +630,11 @@ def run_psspy_command(function_name: str, arguments: Optional[Dict[str, Any]] = 
             spec = json.load(f)
     except Exception as e:
         return {"status": "error", "message": f"Failed to load spec for '{function_name}': {e}"}
+
+    try:
+        arguments = _guard_psspy_path_arguments(spec, arguments)
+    except PathNotAllowed as exc:
+        return {"status": "error", "message": str(exc)}
 
     return_type = spec.get("return_type", "void")
     handler = _HANDLERS.get(return_type)
@@ -516,7 +666,10 @@ def lookup_psspy_command(function_name: str) -> Dict[str, Any]:
     Returns:
         The full API reference dict from the parsed documentation.
     """
-    spec_path = JSON_DIR / f"{function_name}.json"
+    try:
+        spec_path = _command_spec_path(function_name)
+    except ValueError as exc:
+        return {"status": "error", "message": str(exc)}
     if not spec_path.exists():
         return {"status": "error", "message": f"No spec found for '{function_name}'."}
 

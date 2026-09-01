@@ -39,10 +39,10 @@ class Tool:
     kind: str  # "open-source" | "closed-source"
     windows_only: bool
     extra: str | None  # pip extra that installs it; None for core (pandapower/pypsa)
-    server_dir: str  # top-level dir name, e.g. "PSSE"
-    run_kind: str  # "script" | "module"
+    server_dir: str | None  # top-level dir name, e.g. "PSSE"; None for run_kind=="package"
+    run_kind: str  # "script" | "module" | "package"
     entry_rel: str | None = None  # for run_kind=="script": path under server_dir
-    module: str | None = None  # for run_kind=="module": dotted module run with -m
+    module: str | None = None  # dotted module run with -m ("module" and "package")
     module_root_rel: str | None = None  # dir (under server_dir) to add to sys.path for the module
     probe: str | None = None  # importable linchpin dependency, for doctor
     config_keys: tuple[ConfigKey, ...] = field(default_factory=tuple)
@@ -53,6 +53,11 @@ class Tool:
     def resolve_server_dir(self) -> Path:
         """Return the on-disk server directory, working in all three layouts:
         installed wheel (powermcp/_servers/<dir>), editable install, raw checkout."""
+        if self.server_dir is None:
+            raise ValueError(
+                f"'{self.name}' ships its server in its own distribution "
+                f"('{self.module}'); this repo bundles no directory for it"
+            )
         # 1) installed wheel: shipped under the package as powermcp/_servers/<dir>
         try:
             packaged = Path(str(resources.files("powermcp"))) / "_servers" / self.server_dir
@@ -131,10 +136,22 @@ TOOLS: dict[str, "Tool"] = {
             external_solvers=("Julia",),
         ),
         Tool(
+            "genx", "GenX", "open-source", windows_only=False, extra="genx",
+            server_dir="GenX", run_kind="script", entry_rel="server.py",
+            probe="matplotlib",
+            config_keys=(
+                ConfigKey("repo_root", "Path to the GenX.jl repository root", "dir"),
+            ),
+            external_solvers=("Julia", "Gurobi", "HiGHS"),
+            notes="Capacity-expansion analysis over completed GenX runs, plus SLURM job submission. Needs a GenX.jl checkout; case submission needs sbatch on PATH.",
+        ),
+        # powerio ships its own MCP server, so this repo runs that one rather
+        # than vendoring a copy that has to restate powerio's tool names.
+        Tool(
             "powerio", "PowerIO", "open-source", windows_only=False, extra=None,
-            server_dir="powerio", run_kind="script", entry_rel="powerio_mcp.py",
+            server_dir=None, run_kind="package", module="powerio.mcp",
             probe="powerio",
-            notes="Format-neutral case conversion and matrix builder; the JSON transport is the cross-server exchange format. Core dependency: it is the cross-server exchange substrate the pandapower/Egret/PyPSA/ANDES bridges build on.",
+            notes="Format-neutral conversion, matrices, and auditable .pio.json packages. Its canonical MCP server owns package operations; pandapower, PyPSA, Egret, and ANDES resolve package states only when importing into a solver.",
         ),
         # ---- CLOSED-SOURCE / VENDOR ----
         Tool(
@@ -170,7 +187,7 @@ TOOLS: dict[str, "Tool"] = {
         Tool(
             "powerfactory", "PowerFactory", "closed-source", windows_only=_W, extra="powerfactory",
             server_dir="PowerFactory", run_kind="script", entry_rel="MCP_PowerFactory.py",
-            probe="fastmcp",
+            probe=None,
             config_keys=(
                 ConfigKey(
                     "python_path",
@@ -201,15 +218,42 @@ TOOLS: dict[str, "Tool"] = {
                 ),
             ),
         ),
+        Tool(
+            "plexosdb", "PLEXOSDB", "closed-source", windows_only=False, extra="plexosdb",
+            server_dir="PLEXOSDB", run_kind="script", entry_rel="plexosdb_mcp/main.py",
+            # NOT run_kind="module": our own package dir is deliberately named
+            # plexosdb_mcp (it thin-re-exports the upstream *plexosdb-mcp* package
+            # of the same import name), so adding PLEXOSDB/ itself to sys.path
+            # (module launch's root) would make Python resolve `import plexosdb_mcp`
+            # to OURSELVES before ever reaching the real, pip/git-installed one on
+            # site-packages -- a self-shadow, confirmed by direct testing. Script
+            # launch only puts PLEXOSDB/plexosdb_mcp/ (the file's own dir) on
+            # sys.path, so the bare `import plexosdb_mcp` inside main.py correctly
+            # falls through to site-packages instead.
+            probe="plexosdb_mcp",
+            notes=(
+                "Thin re-export of the upstream plexosdb-mcp server (PLEXOS XML object/property/"
+                "membership CRUD, no PLEXOS license/install/vendor call needed) plus "
+                "translate_to_sienna/compare_solutions calling r2x directly. plexosdb-mcp is not on "
+                "PyPI yet: install it manually per PLEXOSDB/README.md "
+                "(pip install \"plexosdb-mcp @ git+https://github.com/NatLabRockies/plexosdb.git"
+                "@main#subdirectory=src/plexosdb-mcp\"); the `plexosdb` extra only covers r2x."
+            ),
+        ),
     )
 }
 
 # Tools installed by a bare `pip install powermcp` and pre-checked in the wizard.
 # powerio is core because it is the cross-server exchange substrate (the
-# pandapower/Egret/PyPSA/ANDES bridges all build on its JSON transport) and is
+# pandapower/Egret/PyPSA/ANDES integrations all build on its JSON transport) and is
 # cheap: abi3 wheels, zero required runtime deps, extras resolving to numpy
 # (core) + scipy (transitive via pandapower).
 CORE: tuple[str, ...] = ("pandapower", "pypsa", "powerio")
+
+
+def install_hint(extra: str | None) -> str:
+    """The pip command that provides a tool. Core tools have no extra."""
+    return f"pip install powermcp[{extra}]" if extra else "pip install powermcp"
 
 
 def get_tool(name: str) -> "Tool":

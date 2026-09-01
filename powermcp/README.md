@@ -18,8 +18,10 @@ Requires **Python 3.10+**.
 pip install powermcp
 ```
 
-The base install includes only the two zero-setup open-source engines: **pandapower**
-and **PyPSA**. Everything else is opt-in via an extra:
+The base install includes **pandapower**, **PyPSA**, and the canonical **PowerIO**
+conversion server. PowerIO `.pio.json` packages can be passed directly to the
+solver import tools, with explicit operating-point or study-commit selection
+when a package contains stored state data. Everything else is opt-in via an extra:
 
 ```bash
 pip install "powermcp[psse]"            # one tool
@@ -35,12 +37,13 @@ pip install "powermcp[all]"             # everything
 
 | Extra | Tool(s) | Notes |
 |---|---|---|
-| *(none / core)* | pandapower, PyPSA | always installed |
-| `andes` | ANDES | |
+| *(none / core)* | pandapower, PyPSA, PowerIO | always installed |
+| `andes` | ANDES | GPL-3.0; installed only as an optional pip extra, never vendored |
 | `egret` | Egret | + needs an external solver (ipopt/Gurobi) |
 | `opendss` | OpenDSS | |
 | `surge` | surge | **Python 3.12–3.14 only** |
 | `hope` | HOPE | + needs Julia at runtime |
+| `genx` | GenX | + needs a GenX.jl checkout; case submission needs SLURM `sbatch` |
 | `ltspice` | LTSpice | executable **auto-detected** (override with `ltspice.exe`) |
 | `powerworld` | PowerWorld | needs licensed Simulator (COM); extra also installs `numba` (required by esa 1.3.5) |
 | `psse`, `pslf`, `powerfactory` | PSS/E, PSLF, PowerFactory | engine loaded from a configured local path |
@@ -57,7 +60,7 @@ powermcp install
 ```
 
 The interactive wizard:
-1. lets you pick tools (pandapower + PyPSA pre-checked; Windows-only tools hidden off Windows),
+1. lets you pick tools (pandapower + PyPSA + PowerIO pre-checked; Windows-only tools hidden off Windows),
 2. prompts for the local software path of any closed-source tool you select,
 3. `pip install`s the chosen extras,
 4. writes the MCP client config for **Claude Desktop**, **Claude Code**, and the **Codex CLI**.
@@ -232,7 +235,7 @@ python PSSE/psse_mcp.py     # uses ~/.powermcp/config.toml if present, else lega
 
 ## 4. Test the package (developers)
 
-The test suite lives in [`../tests`](../tests) (≈62 tests). It needs no licensed software —
+The test suite lives in [`../tests`](../tests) (more than 900 tests). It needs no licensed software —
 vendor engines are stubbed, and server launches are checked with the stdio loop monkeypatched.
 
 ### A. Quick loop — editable install
@@ -258,7 +261,7 @@ build-env\Scripts\python -m build           # writes dist/powermcp-*.whl (+ sdis
 
 # 2) install the wheel into a clean venv
 python -m venv test-env
-test-env\Scripts\python -m pip install dist\powermcp-0.1.0-py3-none-any.whl pytest
+test-env\Scripts\python -m pip install dist\powermcp-0.3.0-py3-none-any.whl pytest
 
 # 3) run the suite against the INSTALLED package (run from a dir without the repo on the path)
 copy ..\tests to a temp dir, then:  test-env\Scripts\python -m pytest <tempdir>\tests -q

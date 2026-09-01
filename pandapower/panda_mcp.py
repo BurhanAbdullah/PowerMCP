@@ -1,7 +1,22 @@
 from typing import Dict, List, Optional, Tuple, Any, Union
+import sys
+from pathlib import Path
+
 import pandapower as pp
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer as FastMCP
 import logging
+
+_repo_root = str(Path(__file__).resolve().parents[1])
+_repo_root_added = _repo_root not in sys.path
+if _repo_root_added:
+    sys.path.insert(0, _repo_root)
+try:
+    from powermcp.solver_case import resolve_solver_case
+    from powermcp.sandbox import PathNotAllowed, checked_path
+finally:
+    if _repo_root_added:
+        sys.path.remove(_repo_root)
+del _repo_root, _repo_root_added
 
 
 # Configure logging
@@ -56,23 +71,25 @@ def create_empty_network() -> Dict[str, Any]:
 
 @mcp.tool()
 def load_network(file_path: str) -> Dict[str, Any]:
-    """Load a pandapower network from a file.
+    """Load a pandapower network from a JSON file.
     
     Args:
-        file_path: Path to the network file (.json, .p)
+        file_path: Path to the network file (.json)
         
     Returns:
         Dict containing status and network information
     """
+    try:
+        file_path = checked_path(file_path, purpose="file_path")
+    except PathNotAllowed as exc:
+        return {"status": "error", "message": str(exc)}
     logger.info(f"Loading network from file: {file_path}")
     global _current_net
     try:
         if file_path.endswith('.json'):
             _current_net = pp.from_json(file_path)
-        elif file_path.endswith('.p'):
-            _current_net = pp.from_pickle(file_path)
         else:
-            raise ValueError("Unsupported file format. Use .json or .p files.")
+            raise ValueError("Unsupported file format. Use a .json file.")
             
         return {
             "status": "success",
@@ -256,94 +273,17 @@ def get_network_info() -> Dict[str, Any]:
         }
 
 # ---------------------------------------------------------------------------
-# powerio bridge: exchange cases with the powerio conversion server.
-# Its parse tool emits a JSON transport string that load_network_from_json
-# ingests directly, so a case parsed once there loads
-# here without re-reading the file; export_network_to_format sends the current
-# network back out through powerio. powerio is an optional extra, so each tool
-# degrades to a status dict when it is missing.
+# PowerIO interchange: resolve one balanced state and use PowerIO's native
+# pandapower writer. Export still round-trips pandapower's PYPOWER tables
+# through PowerIO because pandapower has no corresponding native writer.
 # ---------------------------------------------------------------------------
 
 _POWERIO_HINT = "powerio not installed: pip install 'powerio[mcp,matrix]'"
 
-# powerio bus kind -> MATPOWER/PYPOWER BUS_TYPE code
-# NOTE: _PPC_BUS_TYPE and _powerio_case_to_ppc are duplicated between
-# pandapower/panda_mcp.py and PyPSA/pypsa_mcp.py (server scripts are
-# standalone); keep the two copies identical and sync any fix to both.
-_PPC_BUS_TYPE = {"PQ": 1.0, "PV": 2.0, "REF": 3.0, "ISOLATED": 4.0}
-
-
-def _powerio_case_to_ppc(case) -> Dict[str, Any]:
-    """Build a PYPOWER ppc dict from a powerio Network.
-
-    Values are MATPOWER style (MW, MVAr, degrees), which is what powerio's
-    parsed source tables carry; in-service loads and shunts are summed into
-    the bus table the way MATPOWER stores them.
-    """
-    import numpy as np
-
-    buses = case.buses
-    row_of = {b["id"]: i for i, b in enumerate(buses)}
-    bus = np.zeros((len(buses), 13))
-    for i, b in enumerate(buses):
-        bus[i, :] = (
-            b["id"], _PPC_BUS_TYPE.get(b["kind"], 1.0), 0.0, 0.0, 0.0, 0.0,
-            b["area"], b["vm"], b["va"], b["base_kv"], b["zone"], b["vmax"], b["vmin"],
-        )
-    for load in case.loads:
-        i = row_of.get(load["bus"])
-        if i is not None and load["in_service"]:
-            bus[i, 2] += load["p"]
-            bus[i, 3] += load["q"]
-    for shunt in case.shunts:
-        i = row_of.get(shunt["bus"])
-        if i is not None and shunt["in_service"]:
-            bus[i, 4] += shunt["g"]
-            bus[i, 5] += shunt["b"]
-
-    gens = case.generators
-    gen = np.zeros((len(gens), 21))
-    for i, g in enumerate(gens):
-        gen[i, :10] = (
-            g["bus"], g["pg"], g["qg"], g["qmax"], g["qmin"], g["vg"],
-            g["mbase"], float(g["in_service"]), g["pmax"], g["pmin"],
-        )
-
-    branches = case.branches
-    branch = np.zeros((len(branches), 13))
-    for i, br in enumerate(branches):
-        branch[i, :] = (
-            br["from_id"], br["to_id"], br["r"], br["x"], br["b"],
-            br["rate_a"], br["rate_b"], br["rate_c"], br["tap"], br["shift"],
-            float(br["in_service"]), br["angmin"], br["angmax"],
-        )
-
-    ppc = {
-        "version": "2",
-        "baseMVA": float(case.base_mva),
-        "bus": bus,
-        "gen": gen,
-        "branch": branch,
-    }
-
-    # gencost rows are [model, startup, shutdown, ncost, coeffs...] with
-    # coefficients left-aligned after ncost, padded to the widest row — the
-    # layout from_ppc reads. MATPOWER requires cost data for all gens or none,
-    # so a partial cost set is dropped rather than padded with fake rows.
-    costs = [g["cost"] for g in gens]
-    if costs and all(c is not None for c in costs):
-        gencost = np.zeros((len(costs), 4 + max(len(c["coeffs"]) for c in costs)))
-        for i, c in enumerate(costs):
-            gencost[i, :4] = (c["model"], c["startup"], c["shutdown"], c["ncost"])
-            gencost[i, 4:4 + len(c["coeffs"])] = c["coeffs"]
-        ppc["gencost"] = gencost
-    return ppc
-
-
-def _ppc_to_net(ppc) -> pp.pandapowerNet:
-    from pandapower.converter.pypower.from_ppc import from_ppc
-
-    return from_ppc(ppc)
+def _powerio_to_net(case):
+    """Use PowerIO's native writer to create the pandapower network."""
+    conversion = case.to_format("pandapower-json")
+    return pp.from_json_string(conversion.text), list(conversion.warnings)
 
 
 def _ppc_to_matpower_text(ppc) -> str:
@@ -368,8 +308,13 @@ def _ppc_to_matpower_text(ppc) -> str:
     return "\n".join(out) + "\n"
 
 
-def _network_info_response(message: str) -> Dict[str, Any]:
-    return {
+def _network_info_response(
+    message: str,
+    *,
+    warnings: Optional[List[str]] = None,
+    package: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    response = {
         "status": "success",
         "message": message,
         "network_info": {
@@ -378,45 +323,70 @@ def _network_info_response(message: str) -> Dict[str, Any]:
             "trafos": len(_current_net.trafo),
         },
     }
+    if warnings:
+        response["warnings"] = warnings
+    if package is not None:
+        response["package"] = package
+    return response
 
 
 @mcp.tool()
-def load_network_from_any(file_path: str, source_format: Optional[str] = None) -> Dict[str, Any]:
+def load_network_from_any(
+    file_path: str,
+    source_format: Optional[str] = None,
+    operating_point: Optional[int] = None,
+    study_commit: Optional[int] = None,
+) -> Dict[str, Any]:
     """Load a network from any powerio readable case file.
 
-    Reads MATPOWER .m, PSS/E .raw (v33), PowerWorld .aux, PowerModels JSON, or
-    egret JSON via powerio and converts it to a pandapower network, replacing
-    the currently loaded one. Use this for case formats load_network does not
-    accept. powerio is a core dependency, so this is always available.
+    Reads any balanced PowerIO format or a ``.pio.json`` package and replaces
+    the current network. If the package contains stored state data, select
+    exactly one operating_point or study_commit; PowerIO materializes it before
+    conversion.
 
     Args:
         file_path: Path to the case file
         source_format: Input format name (matpower, powermodels-json,
             egret-json, psse, powerworld); inferred from the file extension
             when omitted
+        operating_point: Optional package operating-point index to materialize
+        study_commit: Optional package study-commit index to materialize
 
     Returns:
         Dict containing status and network information
     """
+    try:
+        file_path = checked_path(file_path, purpose="file_path")
+    except PathNotAllowed as exc:
+        return {"status": "error", "message": str(exc)}
     logger.info(f"Loading network via powerio from: {file_path}")
     global _current_net
     try:
-        import powerio
-    except ImportError:
-        return {"status": "error", "message": _POWERIO_HINT}
-    try:
-        case = powerio.parse_file(file_path, source_format)
-        _current_net = _ppc_to_net(_powerio_case_to_ppc(case))
+        prepared = resolve_solver_case(
+            file_path=file_path,
+            source_format=source_format,
+            operating_point=operating_point,
+            study_commit=study_commit,
+        )
+        _current_net, conversion_warnings = _powerio_to_net(prepared.network)
     except FileNotFoundError:
         return {"status": "error", "message": f"File not found: {file_path}"}
     except Exception as e:
         return {"status": "error", "message": f"Failed to load network: {str(e)}"}
-    return _network_info_response(f"Network loaded successfully from {file_path}")
+    return _network_info_response(
+        f"Network loaded successfully from {file_path}",
+        warnings=list(prepared.warnings) + conversion_warnings,
+        package=prepared.package,
+    )
 
 
 @mcp.tool()
-def load_network_from_json(network_json: str) -> Dict[str, Any]:
-    """Load a network from a powerio JSON transport string.
+def load_network_from_json(
+    network_json: str,
+    operating_point: Optional[int] = None,
+    study_commit: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Load PowerIO model JSON or one selected ``.pio.json`` package state.
 
     Accepts the `json` string returned by the powerio server's parse tool,
     so a case parsed once there loads here without passing a file around or
@@ -427,6 +397,8 @@ def load_network_from_json(network_json: str) -> Dict[str, Any]:
 
     Args:
         network_json: The JSON transport string from powerio
+        operating_point: Optional package operating-point index to materialize
+        study_commit: Optional package study-commit index to materialize
 
     Returns:
         Dict containing status and network information
@@ -434,15 +406,19 @@ def load_network_from_json(network_json: str) -> Dict[str, Any]:
     logger.info("Loading network from powerio JSON transport")
     global _current_net
     try:
-        import powerio
-    except ImportError:
-        return {"status": "error", "message": _POWERIO_HINT}
-    try:
-        case = powerio.from_json(network_json)
-        _current_net = _ppc_to_net(_powerio_case_to_ppc(case))
+        prepared = resolve_solver_case(
+            network_json=network_json,
+            operating_point=operating_point,
+            study_commit=study_commit,
+        )
+        _current_net, conversion_warnings = _powerio_to_net(prepared.network)
     except Exception as e:
         return {"status": "error", "message": f"Failed to load network: {str(e)}"}
-    return _network_info_response("Network loaded successfully from JSON transport")
+    return _network_info_response(
+        "Network loaded successfully from JSON transport",
+        warnings=list(prepared.warnings) + conversion_warnings,
+        package=prepared.package,
+    )
 
 
 @mcp.tool()

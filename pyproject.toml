@@ -10,7 +10,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "powermcp"
-version = "0.2.1"
+version = "0.3.0"
 description = "MCP servers for power-system software (PowerWorld, OpenDSS, PSS/E, pandapower, PyPSA, and more)"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -28,23 +28,32 @@ classifiers = [
 ]
 
 # CORE — always installed by `pip install powermcp`.
-# Only pandapower + PyPSA engines (per project decision); the rest is the MCP
-# runtime plus the CLI/installer toolkit.
+# The core install carries pandapower, PyPSA, PowerIO, the MCP runtime, and the
+# CLI/installer toolkit.
 dependencies = [
     "pandapower",
-    "pypsa>=0.25.0",
+    # 0.35.2 is the last Python 3.10-compatible modern optimizer line and the
+    # first floor we verify against today's dependency resolver. Python 3.11+
+    # naturally resolves to PyPSA 1.x; keep the next major opt-in.
+    "pypsa>=0.35.2,<2",
     "numpy>=1.24",
-    "pandas>=2.0",
-    "mcp>=1.0",
-    # powerio is the cross-server exchange substrate (the pandapower/Egret/PyPSA/
-    # ANDES bridges build on its JSON transport), and is cheap to require: abi3
-    # wheels for five platforms, zero required runtime deps, [mcp,matrix] adding
-    # only scipy (already transitive via pandapower) on top of mcp+numpy.
-    # >=0.4.0: the MCP tool surface is:
-    # convert, save, summary, parse, normalize, matrix, diagnostics, display.
-    # powerio_mcp.py re-exports exactly that surface with no local overlay.
-    "powerio[mcp,matrix]>=0.4.0",
+    # pandapower's PYPOWER converter does not support pandas 3 yet.
+    "pandas>=2.0,<3",
+    # mcp 2.0 moved the server class from mcp.server.fastmcp.FastMCP to
+    # mcp.server.mcpserver.MCPServer; every vendored server in this repo now
+    # imports the latter, so the floor tracks that, not just powerio's own
+    # [mcp] extra requirement (mcp>=2,<3).
+    "mcp>=2,<3",
+    # powerio supplies the conversion server, package model, native solver
+    # writers, shared JSON transports, and path policy used by the bridges.
+    # PowerMCP uses APIs introduced in powerio 0.9.0.
+    # powerio ships the server itself (`python -m powerio.mcp`), so this repo
+    # bundles no copy of it and `powermcp run powerio` runs powerio's.
+    "powerio[mcp,matrix]>=0.9.0,<1",
     # CLI / installer toolkit:
+    # packaging: the doctor compares an installed version against the floor
+    # declared right here, so it has to read a version specifier.
+    "packaging>=23",
     "typer>=0.12",
     "questionary>=2.0",
     "rich>=13",
@@ -61,6 +70,11 @@ opendss    = ["py_dss_toolkit"]
 ltspice    = ["PyLTSpice", "matplotlib"]
 surge      = ["surge-py>=0.1.5; python_version >= '3.12' and python_version < '3.15'"]
 hope       = ["PyYAML>=6.0"]
+# GenX itself is Julia (GenX.jl) and is not pip-installable; the extra covers
+# only the Python-side analysis this connector does. matplotlib and pandas
+# already arrive with the core install via pandapower, so the extra exists to
+# make the dependency explicit rather than to add anything new.
+genx       = ["matplotlib>=3.7", "pandas>=2.0,<3"]
 # powerio moved to core `dependencies`; the extra is gone (a bare
 # `pip install powermcp` now always provides the conversion server).
 # --- closed-source / vendor tool engines ---
@@ -72,11 +86,26 @@ pscad      = ["psutil"]                         # mhi-pscad pulled by the `pscad
 pscad-windows = ["psutil", "mhi-pscad; sys_platform == 'win32'", "mhi-psout; sys_platform == 'win32'"]
 psse       = []                                 # vendor `psspy` not on PyPI — path captured in config.toml
 pslf       = ["pandas"]                         # vendor `PSLF_PYTHON` not on PyPI — path captured in config.toml
-powerfactory = ["fastmcp>=2.0", "numpy>=1.26", "matplotlib>=3.8", "pandas>=1.5"]  # vendor `powerfactory` not on PyPI
+powerfactory = ["numpy>=1.26", "matplotlib>=3.8", "pandas>=1.5"]  # vendor `powerfactory` not on PyPI
+# plexosdb: covers only what's actually on PyPI. `plexosdb-mcp` (the MCP tool
+# layer PLEXOSDB/plexosdb_mcp/main.py re-exports) is NOT on PyPI, and its own
+# metadata pins a direct git dependency — PyPI rejects packages that declare
+# that, which would break `pip install powermcp` itself. So it is deliberately
+# left out of this extra; install it manually per PLEXOSDB/README.md.
+#
+# Pinned to the individual r2x-plexos/-to-sienna/-sienna packages, NOT the
+# `r2x` meta-package: `r2x==2.1.0` transitively pins `r2x-plexos==0.2.0`,
+# which has the Horizon-resolution bug this connector works around (see
+# PLEXOSDB/README.md and NatLabRockies/R2X#299). r2x-plexos>=0.3.0 already
+# fixes it, but pulls in plexosdb>=1.6.0, whose own `plexos2duckdb>=0.1.0b11`
+# dependency currently has no non-yanked stable release satisfying it
+# (epri-dev/plexos2duckdb#3) — install with `uv pip install --prerelease=allow
+# powermcp[plexosdb]` until that's resolved upstream.
+plexosdb   = ["r2x-plexos>=0.3.0", "r2x-plexos-to-sienna>=0.1.0", "r2x-sienna>=0.4.0"]
 # --- convenience groups ---
-opensource = ["powermcp[andes]", "powermcp[egret]", "powermcp[opendss]", "powermcp[ltspice]", "powermcp[surge]", "powermcp[hope]"]
+opensource = ["powermcp[andes]", "powermcp[egret]", "powermcp[opendss]", "powermcp[ltspice]", "powermcp[surge]", "powermcp[hope]", "powermcp[genx]"]
 windows    = ["powermcp[pscad-windows]", "powermcp[powerworld]", "powermcp[powerfactory]", "powermcp[psse]", "powermcp[pslf]"]
-all        = ["powermcp[opensource]", "powermcp[powerworld]", "powermcp[powerfactory]", "powermcp[pscad-windows]", "powermcp[psse]", "powermcp[pslf]"]
+all        = ["powermcp[opensource]", "powermcp[powerworld]", "powermcp[powerfactory]", "powermcp[pscad-windows]", "powermcp[psse]", "powermcp[pslf]", "powermcp[plexosdb]"]
 
 [project.urls]
 Homepage = "https://github.com/Power-Agent/PowerMCP"
@@ -101,24 +130,26 @@ packages = ["powermcp"]
 "surge"        = "powermcp/_servers/surge"
 "OpenDSS"      = "powermcp/_servers/OpenDSS"
 "HOPE"         = "powermcp/_servers/HOPE"
-"powerio"      = "powermcp/_servers/powerio"
+"GenX"         = "powermcp/_servers/GenX"
 "PSCAD"        = "powermcp/_servers/PSCAD"
 "PSSE"         = "powermcp/_servers/PSSE"
 "PSLF"         = "powermcp/_servers/PSLF"
 "PowerWorld"   = "powermcp/_servers/PowerWorld"
 "PowerFactory" = "powermcp/_servers/PowerFactory"
 "LTSpice"      = "powermcp/_servers/LTSpice"
+"PLEXOSDB"     = "powermcp/_servers/PLEXOSDB"
 
 # The sdist must contain the server dirs at the repo root so that the
 # build-wheel-from-sdist step (used by `python -m build`) can force-include them.
 [tool.hatch.build.targets.sdist]
 include = [
     "powermcp",
-    "pandapower", "PyPSA", "ANDES", "Egret", "surge", "OpenDSS", "HOPE", "powerio",
-    "PSCAD", "PSSE", "PSLF", "PowerWorld", "PowerFactory", "LTSpice",
+    "pandapower", "PyPSA", "ANDES", "Egret", "surge", "OpenDSS", "HOPE",
+    "PSCAD", "PSSE", "PSLF", "PowerWorld", "PowerFactory", "LTSpice", "PLEXOSDB",
+    "GenX",
     "README.md", "LICENSE", "pyproject.toml",
 ]
 exclude = [
     "**/__pycache__", "**/*.py[cod]", "**/.pytest_cache",
-    "PSCAD/tests", "HOPE/tests",
+    "PSCAD/tests", "HOPE/tests", "PLEXOSDB/tests",
 ]

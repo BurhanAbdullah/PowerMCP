@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import sys
 
+from packaging.version import Version
+
 from powermcp import doctor
 from powermcp.registry import get_tool
 
@@ -78,3 +80,113 @@ def test_run_doctor_smoke(capsys):
     doctor.run_doctor()  # should not raise
     out = capsys.readouterr().out
     assert "PowerMCP doctor" in out
+
+
+def test_install_hint_for_a_core_tool_names_no_extra():
+    # powerio and the other core tools have extra=None; the hint used to render
+    # `pip install powermcp[None]`, a command that does not exist.
+    from powermcp.registry import install_hint
+
+    assert install_hint(None) == "pip install powermcp"
+    assert install_hint("andes") == "pip install powermcp[andes]"
+
+
+def test_the_extra_survives_rich_markup(capsys):
+    # Rich reads a bracketed lowercase word as a style tag and drops it, so an
+    # unescaped hint printed the useless `pip install powermcp`.
+    doctor.run_doctor("andes")
+    out = capsys.readouterr().out
+    assert "[andes]" in out.replace("\n", "").replace(" ", "")
+
+
+def test_an_out_of_date_dependency_is_not_reported_ok(monkeypatch):
+    # find_spec answers "importable", which is not "new enough".
+    monkeypatch.setattr(doctor, "version", lambda name: "0.0.1")
+    style, msg = doctor._dep_status(get_tool("powerio"))
+    assert style == "red"
+    assert "does not satisfy" in msg
+
+
+def test_the_floor_is_found_when_the_probe_is_not_the_distribution_name():
+    # A probe is an import name and a requirement names a distribution. hope
+    # probes `yaml` and this project requires PyYAML>=6.0; comparing the two
+    # names directly finds nothing and silently reports every version as fine.
+    req = doctor._declared_requirement(get_tool("hope").probe)
+    assert req is not None and doctor._canonical(req.name) == "pyyaml"
+    assert str(req.specifier) == ">=6.0"
+
+
+def test_the_floor_is_found_without_top_level_distribution_metadata(monkeypatch):
+    monkeypatch.setattr(doctor, "_distributions", lambda probe: [])
+    monkeypatch.setattr(
+        doctor,
+        "requires",
+        lambda _distribution: ("powerio[mcp,matrix]>=0.9.0,<1",),
+    )
+    req = doctor._declared_requirement("powerio")
+    assert req is not None
+    assert doctor._canonical(req.name) == "powerio"
+    assert Version("0.9.0") in req.specifier
+    assert Version("1.0.0") not in req.specifier
+
+
+def test_an_out_of_date_dependency_under_another_name_is_caught(monkeypatch):
+    monkeypatch.setattr(doctor, "version", lambda name: "3.0")
+    style, msg = doctor._dep_status(get_tool("hope"))
+    assert style == "red"
+    assert "3.0 does not satisfy" in msg and "6.0" in msg
+
+
+def test_a_version_above_an_upper_bound_is_not_called_below(monkeypatch):
+    monkeypatch.setattr(
+        doctor, "_declared_requirement", lambda probe: doctor.Requirement("mcp>=2,<3")
+    )
+    monkeypatch.setattr(doctor, "version", lambda name: "3.0")
+
+    style, msg = doctor._version_status("mcp")
+
+    assert style == "red"
+    assert "does not satisfy" in msg
+    assert "below" not in msg
+
+
+def test_a_version_that_does_not_parse_is_not_called_out_of_date(monkeypatch):
+    # `contains` answers False for anything it cannot parse, so a malformed
+    # version string would otherwise be reported as below the floor.
+    monkeypatch.setattr(doctor, "version", lambda name: "not-a-version")
+    assert doctor._version_status("powerio") is None
+
+
+def test_the_shared_sdk_is_reported():
+    style, msg = doctor._sdk_status()
+    assert msg.startswith("mcp:")
+    assert style == "green"
+
+
+def test_containment_status_reads_every_root_spelling(tmp_path, monkeypatch):
+    from powermcp.sandbox import ALLOWED_ROOTS_ENV, LEGACY_ROOT_ENVS
+
+    for name in (ALLOWED_ROOTS_ENV,) + LEGACY_ROOT_ENVS:
+        monkeypatch.delenv(name, raising=False)
+    style, msg = doctor._containment_status()
+    assert style == "yellow" and "unconfined" in msg
+
+    monkeypatch.setenv(ALLOWED_ROOTS_ENV, str(tmp_path))
+    style, msg = doctor._containment_status()
+    assert style == "green" and str(tmp_path) in msg
+
+    monkeypatch.setenv(ALLOWED_ROOTS_ENV, str(tmp_path / "gone"))
+    style, msg = doctor._containment_status()
+    assert style == "red" and "every path is refused" in msg
+
+    # One root of several missing narrows what is reachable; it does not refuse
+    # everything, and saying so would send the reader after the wrong problem.
+    import os as _os
+
+    monkeypatch.setenv(
+        ALLOWED_ROOTS_ENV, _os.pathsep.join([str(tmp_path), str(tmp_path / "gone")])
+    )
+    style, msg = doctor._containment_status()
+    assert style == "yellow"
+    assert "every path is refused" not in msg
+    assert str(tmp_path / "gone") in msg
