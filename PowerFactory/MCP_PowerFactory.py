@@ -12,17 +12,17 @@ Tools
 -----
   ping                  Connectivity check.
   get_config            Return simulation_config.json as a JSON string.
-  get_active_project    Return the active PowerFactory project.
-  get_active_study_case Return the active PowerFactory study case.
-  get_parameters        Read selected attributes from matching objects.
-  list_objects          List objects using a PowerFactory object query.
-  list_components       List objects using friendly equipment categories.
-  list_study_cases      List study cases and identify the active case.
+  *get_active_project    Return the active PowerFactory project.
+  *get_active_study_case Return the active PowerFactory study case.
+  *get_parameters        Read selected attributes from matching objects.
+  *list_objects          List objects using a PowerFactory object query.
+  *list_components       List objects using friendly equipment categories.
+  *list_study_cases      List study cases and identify the active case.
   import_project        Import a .pfd file and activate it in PowerFactory.
   create_study_case     Create/activate a study case by name (no simulation run).
   modify_parameter      Modify an object attribute by object query + variable name.
-  add_component         Create a bus, load, generator, line, or transformer.
-  delete_component      Preview or delete an exactly named grid component.
+  *add_component         Create a bus, load, generator, line, or transformer.
+  *delete_component      Preview or delete an exactly named grid component.
   run_loadflow          Run a load flow calculation (ComLdf) on the active study case.
   run_short_circuit     Run a short-circuit calculation (ComShc) on the active study case.
   run_simulation        Run the full pipeline from simulation_config.json.
