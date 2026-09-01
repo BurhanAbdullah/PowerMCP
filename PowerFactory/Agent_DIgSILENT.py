@@ -1259,26 +1259,51 @@ class DIgSILENTAgent:
 
             raise RuntimeError(message) from exc
 
-    @staticmethod
-    def _update_active_diagram(app) -> None:
-        """Insert missing network elements into the active diagram."""
+    @classmethod
+    def _update_active_diagram(cls, app, component) -> None:
+        """Insert and verify a component in the active diagram."""
         desktop = app.GetDesktop()
         if desktop is None:
             raise RuntimeError("No active PowerFactory graphics desktop")
-
-        desktop.Unfreeze()
 
         layout = app.GetFromStudyCase("ComSgllayout")
         if layout is None:
             raise RuntimeError("Diagram Layout Tool is unavailable")
 
-        layout.iAction = 1
-        layout.insertionMode = 1
-
-        result = layout.Execute()
-        if result not in (0, None):
+        start_elements = app.GetFromStudyCase(
+            "Set - SGL Layout - K-neighbourhood.SetSelect"
+        )
+        if start_elements is None:
             raise RuntimeError(
-                f"Diagram Layout Tool failed with error code {result}"
+                "Diagram Layout Tool start-element set is unavailable"
+            )
+
+        existing_start_elements = list(start_elements.All() or [])
+
+        try:
+            start_elements.Clear()
+            start_elements.AddRef(component)
+
+            desktop.Unfreeze()
+
+            layout.iAction = 1
+            layout.insertionMode = 0
+
+            result = layout.Execute()
+            if result not in (0, None):
+                raise RuntimeError(
+                    f"Diagram Layout Tool failed with error code {result}"
+                )
+            app.Rebuild()
+        finally:
+            start_elements.Clear()
+            for existing in existing_start_elements:
+                start_elements.AddRef(existing)
+
+        graphics = cls._find_component_graphics(app, component)
+        if not graphics:
+            raise RuntimeError(
+                "Diagram Layout Tool did not insert the created component"
             )
 
     @staticmethod
@@ -1500,7 +1525,7 @@ class DIgSILENTAgent:
 
             if update_graphics:
                 try:
-                    cls._update_active_diagram(app)
+                    cls._update_active_diagram(app, created)
                     graphics_status = "updated"
                 except Exception as exc:
                     graphics_status = f"failed: {exc}"

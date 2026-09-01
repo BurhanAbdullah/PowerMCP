@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import Agent_DIgSILENT as agent_module
 
@@ -158,6 +158,7 @@ class ComponentCreationTest(unittest.TestCase):
 
     def test_add_component_updates_active_diagram(self):
         grid, _, _, _ = self.network()
+        app = agent_module.pf.app
 
         with patch.object(
             agent_module.DIgSILENTAgent,
@@ -172,9 +173,68 @@ class ComponentCreationTest(unittest.TestCase):
             )
 
         self.assertTrue(ok, message)
-        update_diagram.assert_called_once()
+        update_diagram.assert_called_once_with(
+            app,
+            grid["ElmTerm"][0],
+            )
         self.assertIn("graphics=updated", message)
         self.assertEqual(len(grid["ElmTerm"]), 1)
+
+    def test_update_active_diagram_uses_k_neighbourhood(self):
+        app = Mock()
+        desktop = Mock()
+        layout = Mock()
+
+        component = FakeObject(
+            None,
+            "ElmTerm",
+            "Graphical Test Bus",
+        )
+        existing_start = FakeObject(
+            None,
+            "ElmLod",
+            "Load 03",
+        )
+
+        references = [existing_start]
+        executed_references = []
+
+        start_elements = Mock()
+        start_elements.All.side_effect = lambda: list(references)
+        start_elements.Clear.side_effect = references.clear
+        start_elements.AddRef.side_effect = references.append
+
+        def execute():
+            executed_references[:] = references
+            return 0
+
+        layout.Execute.side_effect = execute
+        app.GetDesktop.return_value = desktop
+        app.GetFromStudyCase.side_effect = lambda query: {
+            "ComSgllayout": layout,
+            (
+                "Set - SGL Layout - "
+                "K-neighbourhood.SetSelect"
+            ): start_elements,
+        }[query]
+
+        with patch.object(
+            agent_module.DIgSILENTAgent,
+            "_find_component_graphics",
+            return_value=[Mock()],
+        ) as find_graphics:
+            agent_module.DIgSILENTAgent._update_active_diagram(
+                app,
+                component,
+            )
+
+        desktop.Unfreeze.assert_called_once_with()
+        app.Rebuild.assert_called_once_with()
+        self.assertEqual(layout.iAction, 1)
+        self.assertEqual(layout.insertionMode, 0)
+        self.assertEqual(executed_references, [component])
+        self.assertEqual(references, [existing_start])
+        find_graphics.assert_called_once_with(app, component)
 
     def test_add_component_bus_validation_and_rollback(self):
         grid, _, _, _ = self.network()
