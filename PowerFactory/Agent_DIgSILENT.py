@@ -1241,6 +1241,60 @@ class DIgSILENTAgent:
 
             raise RuntimeError(message) from exc
 
+    @staticmethod
+    def _update_active_diagram(app) -> None:
+        """Insert missing network elements into the active diagram."""
+        desktop = app.GetDesktop()
+        if desktop is None:
+            raise RuntimeError("No active PowerFactory graphics desktop")
+
+        desktop.Unfreeze()
+
+        layout = app.GetFromStudyCase("ComSgllayout")
+        if layout is None:
+            raise RuntimeError("Diagram Layout Tool is unavailable")
+
+        layout.iAction = 1
+        layout.insertionMode = 1
+
+        result = layout.Execute()
+        if result not in (0, None):
+            raise RuntimeError(
+                f"Diagram Layout Tool failed with error code {result}"
+            )
+
+    @staticmethod
+    def _find_component_graphics(app, component):
+        """Find every diagram object representing the component."""
+        project = app.GetActiveProject()
+        if project is None:
+            raise RuntimeError("No active PowerFactory project")
+
+        component_full_name = component.GetFullName()
+        matches = []
+
+        for diagram in project.GetContents("*.IntGrfnet", 1) or []:
+            for graphic in diagram.GetContents("*.IntGrf", 1) or []:
+                try:
+                    data_object = graphic.GetAttribute("pDataObj")
+                except Exception:
+                    continue
+
+                if data_object is None:
+                    continue
+
+                try:
+                    is_match = (
+                        data_object.GetFullName() == component_full_name
+                    )
+                except Exception:
+                    is_match = False
+
+                if is_match:
+                    matches.append(graphic)
+
+        return matches
+
     @classmethod
     def add_component(
         cls,
@@ -1250,6 +1304,7 @@ class DIgSILENTAgent:
         grid_name: str = "",
         out_of_service: bool = False,
         open_digsilent: bool = True,
+        update_graphics: bool = False,
     ) -> tuple[bool, str]:
         """Create one supported component, verifying and rolling it back."""
         import math
@@ -1423,6 +1478,18 @@ class DIgSILENTAgent:
                 connection_attributes=connections,
             )
 
+            graphics_status = "not_requested"
+
+            if update_graphics:
+                try:
+                    cls._update_active_diagram(app)
+                    graphics_status = "updated"
+                except Exception as exc:
+                    graphics_status = f"failed: {exc}"
+                    log.warn(
+                        f"{label} created, but graphical update failed: {exc}"
+                    )
+
             full_name = created.GetFullName()
             service_state = bool(int(actual["outserv"]))
             if kind == "bus":
@@ -1471,7 +1538,8 @@ class DIgSILENTAgent:
             return (
                 True,
                 f"Created {kind}: {full_name} | {details} | "
-                f"out_of_service={service_state}",
+                f"out_of_service={service_state} | "
+                f"graphics={graphics_status}",
             )
 
         except Exception as exc:
@@ -1487,6 +1555,7 @@ class DIgSILENTAgent:
         grid_name: str = "",
         confirmation: str = "",
         open_digsilent: bool = True,
+        update_graphics: bool = False,
     ) -> tuple[bool, str]:
         """Preview or delete one exactly named supported grid component."""
         component_types = {
@@ -1565,6 +1634,25 @@ class DIgSILENTAgent:
                 for cubicle in cubicles
             ]
 
+            graphics = (
+                cls._find_component_graphics(app, component)
+                if update_graphics
+                else []
+            )
+
+            graphic_locations = [
+                (graphic.GetParent(), graphic.GetFullName())
+                for graphic in graphics
+            ]
+
+            if update_graphics:
+                desktop = app.GetDesktop()
+                if desktop is None:
+                    raise RuntimeError(
+                        "No active PowerFactory graphics desktop"
+                    )
+                desktop.Unfreeze()
+
             component.Delete()
 
             still_exists = any(
@@ -1578,6 +1666,38 @@ class DIgSILENTAgent:
                     "PowerFactory did not delete the component; "
                     "cubicles were left unchanged"
                 )
+
+            for graphic in graphics:
+                try:
+                    graphic.Delete()
+                except Exception:
+                    pass
+
+            remaining_graphics = [
+                full_name
+                for parent, full_name in graphic_locations
+                if any(
+                    obj.GetFullName() == full_name
+                    for obj in (
+                        parent.GetContents("*.IntGrf", 1) or []
+                    )
+                )
+            ]
+
+            if remaining_graphics:
+                raise RuntimeError(
+                    "Component deleted, but graphical objects remain: "
+                    + ", ".join(remaining_graphics)
+                )
+
+            graphics_refresh = "not_requested"
+
+            if update_graphics:
+                try:
+                    app.Rebuild()
+                    graphics_refresh = "rebuilt"
+                except Exception as exc:
+                    graphics_refresh = f"failed:{exc}"
 
             for cubicle in cubicles:
                 try:
@@ -1602,6 +1722,11 @@ class DIgSILENTAgent:
                 )
 
             message = f"Deleted {kind}: {name}"
+            if update_graphics:
+                message += (
+                    f" | graphics_deleted={len(graphics)}"
+                    f" | graphics_refresh={graphics_refresh}"
+                )
             log.ok(message)
             return True, message
 

@@ -622,6 +622,7 @@ def add_component(
     grid_name: str = "",
     out_of_service: bool = False,
     open_digsilent: bool = True,
+    update_graphics: bool = False,
 ) -> str:
     """
     Create a bus, load, generator, line, or transformer.
@@ -634,6 +635,9 @@ def add_component(
     - line: bus1_name, bus2_name, template_line, length_km
     - transformer: high_voltage_bus_name, low_voltage_bus_name,
       template_transformer
+
+    Set update_graphics to true to insert missing network elements into
+    the currently active single-line diagram using PowerFactory's Diagram Layout Tool.
     """
     return _agent_result(
         "add_component",
@@ -643,6 +647,7 @@ def add_component(
         grid_name,
         out_of_service,
         open_digsilent,
+        update_graphics,
     )
 
 
@@ -653,12 +658,16 @@ def delete_component(
     grid_name: str = "",
     confirmation: str = "",
     open_digsilent: bool = True,
+    update_graphics: bool = False,
 ) -> str:
     """
     Preview or delete one exactly named grid component.
 
     Call without confirmation first. To perform deletion, repeat the call
     using the exact confirmation token returned by the preview.
+
+    Set update_graphics to true for confirmed deletion from the currently
+    active single-line diagram. Preview calls do not modify the diagram.
     """
     _, DIgSILENTAgent = _load_modules()
     ok, message = _pf(
@@ -668,6 +677,7 @@ def delete_component(
         grid_name,
         confirmation,
         open_digsilent,
+        update_graphics,
     )
     return json.dumps({
         "success": ok,

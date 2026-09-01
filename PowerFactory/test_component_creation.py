@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 import Agent_DIgSILENT as agent_module
 
@@ -83,6 +84,11 @@ class FakeApplication:
             return self.grids
         return list(self.objects.get(query, []))
 
+    def GetActiveProject(self):
+        if not hasattr(self, "project"):
+            self.project = FakeObject(None, "IntPrj", "Project")
+        return self.project
+
     def Show(self):
         self.shown = True
 
@@ -148,6 +154,26 @@ class ComponentCreationTest(unittest.TestCase):
             parameters,
             **kwargs,
         )
+
+    def test_add_component_updates_active_diagram(self):
+        grid, _, _, _ = self.network()
+
+        with patch.object(
+            agent_module.DIgSILENTAgent,
+            "_update_active_diagram",
+        ) as update_diagram:
+            ok, message = self.add_component(
+                "bus",
+                "Graphical Test Bus",
+                {"nominal_voltage_kv": 110.0},
+                open_digsilent=False,
+                update_graphics=True,
+            )
+
+        self.assertTrue(ok, message)
+        update_diagram.assert_called_once()
+        self.assertIn("graphics=updated", message)
+        self.assertEqual(len(grid["ElmTerm"]), 1)
 
     def test_add_component_bus_validation_and_rollback(self):
         grid, _, _, _ = self.network()
@@ -569,6 +595,86 @@ class ComponentCreationTest(unittest.TestCase):
             ),
             "Unsupported parameter(s)",
         )
+
+    def test_delete_component_updates_active_diagram(self):
+        grid, buses, _, _ = self.network(("Bus 01",))
+
+        ok, message = self.add_component(
+            "load",
+            "Graphical Test Load",
+            {
+                "bus_name": "Bus 01",
+                "active_power_mw": 1.0,
+                "reactive_power_mvar": 0.25,
+            },
+            open_digsilent=False,
+        )
+        self.assertTrue(ok, message)
+
+        class FakeDesktop:
+            def __init__(self):
+                self.unfrozen = False
+
+            def Unfreeze(self):
+                self.unfrozen = True
+
+        desktop = FakeDesktop()
+        app = agent_module.DIgSILENTAgent._shared_app
+
+        project = app.GetActiveProject()
+        diagram = project.CreateObject("IntGrfnet", "Grid")
+
+        created_load = grid["ElmLod"][-1]
+
+        target_graphic = diagram.CreateObject(
+            "IntGrf",
+            "Graphical Test Load Symbol",
+        )
+        target_graphic.SetAttribute("pDataObj", created_load)
+
+        unrelated_graphic = diagram.CreateObject(
+            "IntGrf",
+            "Existing Bus Symbol",
+        )
+        unrelated_graphic.SetAttribute(
+            "pDataObj",
+            buses["Bus 01"],
+        )
+
+        with (
+            patch.object(
+                app,
+                "GetDesktop",
+                return_value=desktop,
+                create=True,
+            ),
+            patch.object(
+                app,
+                "Rebuild",
+                return_value=None,
+                create=True,
+            ) as rebuild,
+        ):
+            ok, message = agent_module.DIgSILENTAgent.delete_component(
+                "load",
+                "Graphical Test Load",
+                confirmation="DELETE load Graphical Test Load",
+                open_digsilent=False,
+                update_graphics=True,
+            )
+
+        self.assertTrue(ok, message)
+        self.assertTrue(desktop.unfrozen)
+        rebuild.assert_called_once_with()
+
+        self.assertIn("graphics_deleted=1", message)
+        self.assertIn("graphics_refresh=rebuilt", message)
+
+        self.assertNotIn(target_graphic, diagram["IntGrf"])
+        self.assertIn(unrelated_graphic, diagram["IntGrf"])
+
+        self.assertEqual(grid["ElmLod"], [])
+        self.assertEqual(buses["Bus 01"]["StaCubic"], [])
 
     def test_delete_component_requires_confirmation_and_cleans_connections(self):
         template = ("Line 01 - 02.ElmLne", "ElmLne", "TypLne")
