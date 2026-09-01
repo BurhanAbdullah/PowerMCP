@@ -6,6 +6,7 @@ import Agent_DIgSILENT as agent_module
 
 DEFAULTS = {
     "ElmTerm": {"uknom": 0.0, "outserv": 0},
+    "StaSwitch": {"aUsage": "", "on_off": 0},
     "ElmLod": {"bus1": None, "plini": 0.0, "qlini": 0.0, "outserv": 0},
     "ElmSym": {
         "typ_id": None,
@@ -412,6 +413,17 @@ class ComponentCreationTest(unittest.TestCase):
         self.assertIs(
             created.GetAttribute("bus2"), buses["Bus 02"]["StaCubic"][0]
         )
+
+        for bus_name in ("Bus 01", "Bus 02"):
+            cubicle = buses[bus_name]["StaCubic"][0]
+            switches = cubicle["StaSwitch"]
+
+            self.assertEqual(len(switches), 1)
+            self.assert_attributes(
+                switches[0],
+                {"aUsage": "cbk", "on_off": 1},
+            )
+
         self.assert_attributes(created, {"dline": 10.0, "outserv": 1})
 
         duplicate = self.add_component(

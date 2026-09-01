@@ -1189,6 +1189,24 @@ class DIgSILENTAgent:
                     )
                 cubicles.append(cubicle)
 
+                switch = cubicle.CreateObject("StaSwitch", "Switch")
+                if switch is None:
+                    raise RuntimeError(
+                        "Could not create circuit-breaker in cubicle: "
+                        f"{cubicle_name}"
+                    )
+
+                switch.SetAttribute("aUsage", "cbk")
+                switch.SetAttribute("on_off", 1)
+
+                if (
+                    switch.GetAttribute("aUsage") != "cbk"
+                    or switch.GetAttribute("on_off") != 1
+                ):
+                    raise RuntimeError(
+                        "PowerFactory did not retain the circuit-breaker settings"
+                    )
+
             element = grid.CreateObject(class_name, element_name)
             if element is None:
                 raise RuntimeError(

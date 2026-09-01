@@ -636,8 +636,12 @@ def add_component(
     - transformer: high_voltage_bus_name, low_voltage_bus_name,
       template_transformer
 
+    Connected loads, generators, lines, and transformers receive one closed
+    circuit breaker in each generated cubicle.
+
     Set update_graphics to true to insert missing network elements into
-    the currently active single-line diagram using PowerFactory's Diagram Layout Tool.
+    the currently active single-line diagram using PowerFactory's Diagram
+    Layout Tool.
     """
     return _agent_result(
         "add_component",
