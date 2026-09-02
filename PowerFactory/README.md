@@ -126,6 +126,10 @@ Each generated connection cubicle contains one closed circuit breaker
 (`StaSwitch`, `aUsage="cbk"`, `on_off=1`). Set `update_graphics=true` to
 request insertion into the active single-line diagram.
 
+If graphical insertion fails, the network component remains created and the
+tool returns `success=false` with the graphical error. Check the returned
+message before retrying to avoid creating a duplicate.
+
 PowerFactory may place an isolated bus far from the existing network when it
 is inserted directly into the diagram. For a better anchored result, create
 the bus with `update_graphics=false`, then create its first connecting line

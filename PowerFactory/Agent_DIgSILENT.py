@@ -1577,10 +1577,12 @@ class DIgSILENTAgent:
                     cls._update_active_diagram(app, created)
                     graphics_status = "updated"
                 except Exception as exc:
-                    graphics_status = f"failed: {exc}"
-                    log.warn(
-                        f"{label} created, but graphical update failed: {exc}"
+                    message = (
+                        f"{label} '{name}' was created, but graphical "
+                        f"update failed: {exc}"
                     )
+                    log.error(message)
+                    return False, message
 
             full_name = created.GetFullName()
             service_state = bool(int(actual["outserv"]))
@@ -1765,6 +1767,12 @@ class DIgSILENTAgent:
                 except Exception:
                     pass
 
+            for cubicle in cubicles:
+                try:
+                    cubicle.Delete()
+                except Exception:
+                    pass
+
             remaining_graphics = [
                 full_name
                 for parent, full_name in graphic_locations
@@ -1776,27 +1784,6 @@ class DIgSILENTAgent:
                 )
             ]
 
-            if remaining_graphics:
-                raise RuntimeError(
-                    "Component deleted, but graphical objects remain: "
-                    + ", ".join(remaining_graphics)
-                )
-
-            graphics_refresh = "not_requested"
-
-            if update_graphics:
-                try:
-                    app.Rebuild()
-                    graphics_refresh = "rebuilt"
-                except Exception as exc:
-                    graphics_refresh = f"failed:{exc}"
-
-            for cubicle in cubicles:
-                try:
-                    cubicle.Delete()
-                except Exception:
-                    pass
-
             remaining_cubicles = [
                 full_name
                 for parent, full_name in cubicle_locations
@@ -1807,11 +1794,27 @@ class DIgSILENTAgent:
                     )
                 )
             ]
+
+            if remaining_graphics:
+                raise RuntimeError(
+                    "Component deleted, but graphical objects remain: "
+                    + ", ".join(remaining_graphics)
+                )
+
             if remaining_cubicles:
                 raise RuntimeError(
                     "Component deleted, but connected cubicles remain: "
                     + ", ".join(remaining_cubicles)
                 )
+
+            graphics_refresh = "not_requested"
+
+            if update_graphics:
+                try:
+                    app.Rebuild()
+                    graphics_refresh = "rebuilt"
+                except Exception as exc:
+                    graphics_refresh = f"failed:{exc}"
 
             message = f"Deleted {kind}: {name}"
             if update_graphics:

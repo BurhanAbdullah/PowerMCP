@@ -664,7 +664,8 @@ def add_component(
 
     Set update_graphics to true to insert missing network elements into
     the currently active single-line diagram using PowerFactory's Diagram
-    Layout Tool.
+    Layout Tool. If insertion fails, the network component remains created,
+    but the tool returns success=false with the graphical error.
     """
     return _agent_result(
         "add_component",

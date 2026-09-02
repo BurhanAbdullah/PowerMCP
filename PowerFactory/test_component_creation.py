@@ -180,6 +180,28 @@ class ComponentCreationTest(unittest.TestCase):
         self.assertIn("graphics=updated", message)
         self.assertEqual(len(grid["ElmTerm"]), 1)
 
+        with patch.object(
+            agent_module.DIgSILENTAgent,
+            "_update_active_diagram",
+            side_effect=RuntimeError("layout failed"),
+        ):
+            ok, message = self.add_component(
+                "bus",
+                "Graphical Failure Bus",
+                {"nominal_voltage_kv": 110.0},
+                open_digsilent=False,
+                update_graphics=True,
+            )
+
+        self.assertFalse(ok)
+        self.assertIn("was created, but graphical update failed", message)
+        self.assertIn("layout failed", message)
+        self.assertEqual(len(grid["ElmTerm"]), 2)
+        self.assertEqual(
+            grid["ElmTerm"][-1].GetAttribute("loc_name"),
+            "Graphical Failure Bus",
+        )
+
     def test_update_active_diagram_uses_k_neighbourhood(self):
         app = Mock()
         desktop = Mock()
@@ -747,6 +769,54 @@ class ComponentCreationTest(unittest.TestCase):
 
         self.assertEqual(grid["ElmLod"], [])
         self.assertEqual(buses["Bus 01"]["StaCubic"], [])
+
+        ok, message = self.add_component(
+            "load",
+            "Stubborn Graphical Test Load",
+            {
+                "bus_name": "Bus 01",
+                "active_power_mw": 1.0,
+                "reactive_power_mvar": 0.25,
+            },
+            open_digsilent=False,
+        )
+        self.assertTrue(ok, message)
+
+        stubborn_load = grid["ElmLod"][-1]
+        stubborn_graphic = diagram.CreateObject(
+            "IntGrf",
+            "Stubborn Graphical Test Load Symbol",
+        )
+        stubborn_graphic.SetAttribute("pDataObj", stubborn_load)
+
+        with (
+            patch.object(
+                app,
+                "GetDesktop",
+                return_value=desktop,
+                create=True,
+            ),
+            patch.object(
+                stubborn_graphic,
+                "Delete",
+                side_effect=RuntimeError("graphical deletion blocked"),
+            ),
+        ):
+            ok, message = agent_module.DIgSILENTAgent.delete_component(
+                "load",
+                "Stubborn Graphical Test Load",
+                confirmation=(
+                    "DELETE load Stubborn Graphical Test Load"
+                ),
+                open_digsilent=False,
+                update_graphics=True,
+            )
+
+        self.assertFalse(ok)
+        self.assertIn("graphical objects remain", message)
+        self.assertEqual(grid["ElmLod"], [])
+        self.assertEqual(buses["Bus 01"]["StaCubic"], [])
+        self.assertIn(stubborn_graphic, diagram["IntGrf"])
 
     def test_delete_component_requires_confirmation_and_cleans_connections(self):
         template = ("Line 01 - 02.ElmLne", "ElmLne", "TypLne")
