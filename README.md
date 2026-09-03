@@ -14,6 +14,16 @@ The [Model Context Protocol](https://modelcontextprotocol.io/introduction) (MCP)
 - Reusable components for building intelligent power system applications
 - Interoperability between different AI models and power system tools
 
+## 🛡️ Cross-Platform Security Audit
+
+PowerMCP now includes a backend-neutral **Security Audit MCP server** for standardized base-case and N-1 screening across pandapower and PyPSA. It independently evaluates contingencies, detects voltage and thermal violations, treats non-convergence as critical, ranks contingencies with a deterministic 0–10 severity score, and can render a concise Markdown engineering report.
+
+```bash
+python SecurityAudit/security_audit_mcp.py
+```
+
+The security layer is deliberately complementary to the existing backend-specific servers: use it for a consistent first-pass screening and then use PowerWorld, pandapower, PyPSA, PSSE, PSLF, ANDES, OpenDSS, or other integrations for deeper studies.
+
 ## 🤝 Our Community Vision
 
 We're building an open-source community focused on accelerating AI adoption in the power domain through MCP. Our goals are:
@@ -38,7 +48,6 @@ powermcp install        # pick tools, capture local paths, write your MCP client
 
 > 📋 The **[PowerMCP Tutorial PDF](https://github.com/Power-Agent/PowerMCP/blob/main/PowerMCP_Tutorial.pdf)** documents the original **low-code / manual** setup — cloning the repo and hand-editing the Claude Desktop config. It predates the `powermcp` installer and is **not the recommended path**; use it only if you specifically want the manual approach.
 
-
 ### Video Demos
 
 Check out these demos showcasing PowerMCP in action:
@@ -52,17 +61,17 @@ Check out these demos showcasing PowerMCP in action:
 MCP follows a client-server architecture where:
 
 * **Hosts** are LLM applications (like Claude Desktop or IDEs) that initiate connections
-* **Clients** maintain 1:1 connections with servers, inside the host application
+* **Clients** maintain 1:1 connections between servers and hosts
 * **Servers** provide context, tools, and prompts to clients
 
 Check out these helpful tutorials to get started with MCP:
 
 - [**Getting Started with MCP**](https://modelcontextprotocol.io/introduction): Official introduction to the Model Context Protocol fundamentals.
-- [**Core Architecture**](https://modelcontextprotocol.io/docs/concepts/architecture): Detailed explanation of MCP's client-server architecture.
-- [**Building Your First MCP Server**](https://modelcontextprotocol.io/docs/develop/build-server): Step-by-step guide to creating a basic MCP server.
-- [**Anthropic MCP Tutorial**](https://docs.claude.com/en/docs/mcp): Learn how to use MCP with Claude models.
+- [**Core Architecture**](https://modelcontextprotocol.io/docs/concepts/architecture): Detailed explanation of the MCP client-server architecture.
+- [**Building Your First MCP Server**](https://modelcontextprotocol.io/docs/develop/build-server): Step-by-step guide to building a basic MCP server.
+- [**Anthropic MCP Tutorial**](https://docs.claude.com/en/docs/mcp): Learn how to use MCP with Claude.
 - [**Cursor MCP Tutorial**](https://cursor.com/docs/context/mcp): Learn how to use MCP with Cursor.
-- [**Other Protocol**](https://cdn.openai.com/business-guides-and-resources/a-practical-guide-to-building-agents.pdf): Open AI Function Calling Tool
+- [**Other Protocol**](https://cdn.openai.com/business-guides-and-resources/a-practical-guide-to-building-agents.pdf): OpenAI Function Calling guidance.
 
 ## 📦 Installation
 
@@ -131,68 +140,31 @@ PowerMCP runs the MCP server that [powerio](https://github.com/eigenergy/powerio
 
 Its JSON transport is the exchange format between PowerMCP servers: parse a case once, pass the returned `json` string between tool calls, and save runtime artifacts only when a backend needs a file. Existing `json` transport workflows remain supported.
 
-```
+```text
 parse(path="case9.raw")                            # powerio server -> {"json": ..., "summary": ...}
 load_network_from_json(network_json=...)           # pandapower server ingests the transport
 load_model_from_json(network_json=...)             # egret server stages it as a solvable case file
 import_case_from_json(network_json=..., output_path="case9.nc")  # PyPSA server writes a .nc for its tools
-matrix(kind="ptdf", json=...)                      # powerio server builds matrices from it
+matrix(kind="ptdf", json=...)                     # powerio server builds matrices from it
 save(to_format="psse", out_path="case9.raw", json=...)  # stage a file for path only servers
 ```
 
-PowerIO also supports the `.pio.json` package transport, which carries the model plus package metadata and structured diagnostics:
+PowerIO also supports the `.pio.json` package transport, which carries the model plus package metadata and structured diagnostics.
 
-```
+```text
 parsed = parse(path="case9.raw", transport="package")
 pkg = parsed["package_json"]
 summary(package_json=pkg)
 matrix(kind="ptdf", package_json=pkg)
 save(to_format="psse", out_path="case9.raw", package_json=pkg)
-diagnostics(package_json=pkg)  # package diagnostics summary and structured findings
+diagnostics(package_json=pkg)
 ```
 
-A package can also retain provenance and source maps, stable row identities,
-validation state, operating-point series, cumulative study commits, and
-lowering history. The canonical PowerIO MCP tools continue to own that package
-lifecycle. PowerMCP uses the package only at the solver boundary:
-
-```
-# A static package loads directly.
-import_case_from_json(network_json=pkg, output_path="case9.nc")
-
-# A package with one or more stored states requires an explicit selection.
-# PowerIO v0.9 materializes and validates the selected state before PowerMCP
-# creates the solver model.
-import_case_from_json(
-    network_json=pkg,
-    output_path="dispatch.nc",
-    operating_point=3,
-)
-load_network_from_json(network_json=pkg, study_commit=1)  # pandapower
-```
-
-The same `operating_point` and `study_commit` selectors are available on the
-PowerIO import tools for pandapower, PyPSA, ANDES, and Egret. PowerMCP rejects
-unselected stored state data instead of silently solving the package's base model.
-Study materialization honors the package's `base_operating_point`. Balanced
-solvers also reject multiconductor packages until the caller explicitly lowers
-them with PowerIO, so a lossy distribution-to-transmission reduction is never
-implicit. PyPSA and pandapower use PowerIO's native writers, preserving the
-supported cost and in-service metadata without PowerMCP rebuilding PYPOWER
-tables.
+A package can also retain provenance and source maps, stable row identities, validation state, operating-point series, cumulative study commits, and lowering history. The canonical PowerIO MCP tools continue to own that package lifecycle. PowerMCP uses the package only at the solver boundary.
 
 `summary` returns the canonical nested shape used by PowerIO and PowerMCP: counts live under `elements` (`elements.buses`, `elements.branches`, `elements.generators`) and topology metadata lives under `topology` (`topology.connected_components`, `topology.reference_buses`).
 
-`save` covers the servers without a bridge: write the converted case to disk and point their load tools at the file. For OpenDSS, save a distribution transport as DSS, then compile that DSS file:
-
-```
-save(to_format="dss", out_path="feeder.dss", json=..., json_format="bmopf-json")
-compile_opendss_file(dss_file="feeder.dss")
-```
-
-PowerWorld `.pwd` display files decode separately via `display(path=...)`, which returns the diagram canvas and each substation's display coordinates. The display geometry is distinct from the `.pwb`/`.aux` case data.
-
-PowerIO MCP tools accept local paths and `file://` URIs. Nonlocal URI schemes are rejected. Set `POWERIO_MCP_ALLOWED_ROOTS` to an `os.pathsep` separated list of directories to constrain paths handled by the shared PowerIO sandbox. PyPSA preflights a NetCDF file or every descendant of a CSV directory before constructing a network, and both explicit and legacy-derived CSV import destinations are checked before writing. PyPSA and surge install directory outputs from a private sibling staging directory. Generated run directories exposed by the bundled servers use the same path policy. Put `POWERMCP_HOME` under an allowed root if ANDES, Egret, or LTSpice should write run artifacts while containment is enabled. These are path preflight checks; another process can replace a checked entry before a backend opens it.
+PowerIO MCP tools accept local paths and `file://` URIs. Nonlocal URI schemes are rejected. Set `POWERIO_MCP_ALLOWED_ROOTS` to an `os.pathsep` separated list of directories to constrain paths handled by the shared PowerIO sandbox.
 
 ### Running from a clone (without installing)
 
@@ -200,15 +172,24 @@ Every bundled server is still a standalone script. Clone the repo and run any se
 
 ```bash
 python pandapower/panda_mcp.py
-python PSSE/psse_mcp.py          # uses ~/.powermcp/config.toml if present, else legacy default paths
-python -m powerio.mcp            # powerio ships its own server; the clone holds no copy
+python SecurityAudit/security_audit_mcp.py
+python PSSE/psse_mcp.py
+python -m powerio.mcp
 ```
 
 ### Testing with your LLMs
 
 > **Note:** All MCPs should be tested via an MCP client (Claude Desktop, Claude Code, or Codex) before submitting a PR to ensure consistency.
 
-`powermcp install` writes the client configuration for you. The generated entries look like the example in [`config.json`](config.json). (The **[PowerMCP Tutorial PDF](PowerMCP_Tutorial.pdf)** covers the older manual / low-code setup and isn't needed for the package install.)
+`powermcp install` writes the client configuration for you. The generated entries look like the example in [`config.json`](config.json).
+
+### Security Audit testing
+
+```bash
+pytest SecurityAudit/tests/test_security_audit.py -v
+```
+
+The tests cover severity calculation, deterministic ranking, aggregate risk classification, and report generation without requiring a commercial simulator.
 
 ## 📚 Documentation
 
@@ -228,7 +209,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## 🙏 Acknowledgments
 
 ### Core Team
-- [Qian Zhang](https://www.linkedin.com/in/qian-zhang-75323111b/), [Steven Black](https://www.linkedin.com/in/steven-black-09322b31/), [Paulo Radatz](https://www.linkedin.com/in/pauloradatz/), [Andrea Pomarico](https://www.linkedin.com/in/andrea-pomarico-2695a2218/), [Muhy Eddin Za’ter](https://scholar.google.com/citations?user=_IFFYFAAAAAJ&hl=en), [Luan Lopes dos Santos](https://www.linkedin.com/in/luan-lopes/), [Stephen Jenkins](https://www.linkedin.com/in/stephenjenkins2/), [Maanas Goel](https://www.linkedin.com/in/maanas-goel/), [Shen Wang](https://www.linkedin.com/in/swang16/), [Drew Gray](https://www.linkedin.com/in/drew-gray-b09ba426/), [Samuel Talkington](https://samueltalkington.com/)
+- [Qian Zhang](https://www.linkedin.com/in/qian-zhang-75323111b/), [Steven Black](https://www.linkedin.com/in/steven-black-09322b31/), [Paulo Radatz](https://www.linkedin.com/in/pauloradatz/), [Andrea Pomarico](https://www.linkedin.com/in/andrea-pomarico-2695a2218/), [Muhy Eddin Za’ter](https://scholar.google.com/citations?user=_IFFYFAAAAAJ&hl=en), [Luan Lopes](https://www.linkedin.com/in/luan-lopes/), [Stephen Jenkins](https://www.linkedin.com/in/stephenjenkins2/), [Maanas Goel](https://www.linkedin.com/in/maanas-goel/), [Shen Wang](https://www.linkedin.com/in/swang16/), [Drew Gray](https://www.linkedin.com/in/drew-gray-b09ba426/), [Samuel Talkington](https://samueltalkington.com/)
 
 ### Special Thanks
 - All contributors who help make this project better
