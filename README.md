@@ -16,13 +16,13 @@ The [Model Context Protocol](https://modelcontextprotocol.io/introduction) (MCP)
 
 ## 🛡️ Cross-Platform Security Audit
 
-PowerMCP now includes a backend-neutral **Security Audit MCP server** for standardized base-case and N-1 screening across pandapower and PyPSA. It independently evaluates contingencies, detects voltage/thermal violations, treats non-convergence as critical, ranks contingencies with a deterministic 0–10 severity score, and can render a concise Markdown engineering report.
+PowerMCP now includes a backend-neutral **Security Audit MCP server** for standardized base-case and N-1 screening across pandapower and PyPSA. It independently evaluates contingencies, detects voltage and thermal violations, treats non-convergence as critical, ranks contingencies with a deterministic 0–10 severity score, and can render a concise Markdown engineering report.
 
 ```bash
 python SecurityAudit/security_audit_mcp.py
 ```
 
-The detailed solver-specific servers remain available for PowerWorld, pandapower, PyPSA, PSSE, PSLF, ANDES, OpenDSS, and other integrations. The Security Audit layer is intended for agent workflows that need a common screening result before deeper backend-specific analysis.
+The security layer is deliberately complementary to the existing backend-specific servers: use it for a consistent first-pass screening and then use PowerWorld, pandapower, PyPSA, PSSE, PSLF, ANDES, OpenDSS, or other integrations for deeper studies.
 
 ## 🤝 Our Community Vision
 
@@ -37,7 +37,9 @@ We're building an open-source community focused on accelerating AI adoption in t
 
 ### 📖 Quick start
 
-> **🚀 New to PowerMCP? Start here!** The recommended way to get started is the `powermcp` package and its installer (see the **Installation** section below).
+> **🚀 New to PowerMCP? Start here!**
+
+The recommended way to get started is the `powermcp` package and its installer (see the **Installation** section below):
 
 ```bash
 pip install powermcp
@@ -51,24 +53,25 @@ powermcp install        # pick tools, capture local paths, write your MCP client
 Check out these demos showcasing PowerMCP in action:
 
 - [**Contingency Evaluation Demo**](https://www.youtube.com/watch?v=MbF-SlBI4Ws): An LLM automatically operates power system software, such as PowerWorld and pandapower, to perform contingency analysis and generate professional reports.
+
 - [**Loadgrowth Evaluation Demo**](https://www.youtube.com/watch?v=euFUvhhV5dM): An LLM automatically operates power system software, such as PowerWorld, to evaluate different load growth scenarios and generate professional reports with recommendations.
 
 ### Useful MCP Tutorials
 
 MCP follows a client-server architecture where:
 
-* **Hosts** are LLM applications (like Claude Desktop, Claude Code, or Codex) that initiate connections
-* **Clients** maintain 1:1 connections with servers, inside the host application
+* **Hosts** are LLM applications (like Claude Desktop or IDEs) that initiate connections
+* **Clients** maintain 1:1 connections between servers and hosts
 * **Servers** provide context, tools, and prompts to clients
 
 Check out these helpful tutorials to get started with MCP:
 
-- [**Getting Started with MCP**](https://modelcontextprotocol.io/introduction)
-- [**Core Architecture**](https://modelcontextprotocol.io/docs/concepts/architecture)
-- [**Building Your First MCP Server**](https://modelcontextprotocol.io/docs/develop/build-server)
-- [**Anthropic MCP Tutorial**](https://docs.claude.com/en/docs/mcp)
-- [**Cursor MCP Tutorial**](https://cursor.com/docs/context/mcp)
-- [**Other Protocol**](https://cdn.openai.com/business-guides-and-resources/a-practical-guide-to-building-agents.pdf)
+- [**Getting Started with MCP**](https://modelcontextprotocol.io/introduction): Official introduction to the Model Context Protocol fundamentals.
+- [**Core Architecture**](https://modelcontextprotocol.io/docs/concepts/architecture): Detailed explanation of the MCP client-server architecture.
+- [**Building Your First MCP Server**](https://modelcontextprotocol.io/docs/develop/build-server): Step-by-step guide to building a basic MCP server.
+- [**Anthropic MCP Tutorial**](https://docs.claude.com/en/docs/mcp): Learn how to use MCP with Claude.
+- [**Cursor MCP Tutorial**](https://cursor.com/docs/context/mcp): Learn how to use MCP with Cursor.
+- [**Other Protocol**](https://cdn.openai.com/business-guides-and-resources/a-practical-guide-to-building-agents.pdf): OpenAI Function Calling guidance.
 
 ## 📦 Installation
 
@@ -78,34 +81,122 @@ PowerMCP installs as a single Python package with an interactive CLI. Python 3.1
 pip install powermcp
 ```
 
-The base install includes the open-source engines that need no extra setup — **pandapower**, **PyPSA**, and **PowerIO**. Other tools are opt-in via extras.
+The base install includes the open-source engines that need no extra setup — **pandapower**, **PyPSA**, and **PowerIO** (the cross-server case-conversion substrate). Every other tool is opt-in via an extra:
 
 ```bash
-pip install powermcp[psse]
-pip install powermcp[andes,opendss]
-pip install powermcp[opensource]
-pip install powermcp[all]
+pip install powermcp[psse]              # add PSS/E support
+pip install powermcp[andes,opendss]     # add several tools at once
+pip install powermcp[opensource]        # all open-source tools (ANDES, Egret, OpenDSS, surge, HOPE, LTSpice, GenX)
+pip install powermcp[all]               # everything (closed-source tools still need the local software)
 ```
+
+### Set up with the interactive installer
+
+```bash
+powermcp install
+```
+
+The wizard lets you pick tools (pandapower + PyPSA + PowerIO pre-selected), captures the local install path for any closed-source/EXE-based tools you choose (PSS/E, PSLF, PowerFactory, PSCAD, LTSpice), installs the right extras, and writes the MCP client configuration for **Claude Desktop**, **Claude Code**, and the **Codex CLI**. Use `--dry-run` to preview the changes, or `--yes` for a non-interactive core install.
+
+In the interactive picker, move with ↑/↓ and **press SPACE to toggle each tool** before ENTER (ENTER alone keeps only the preselected tools). Prefer not to use the checkbox? Choose tools directly:
+
+```bash
+powermcp install --tools psse,andes      # core + the listed tools
+powermcp install --all                   # every tool available on this platform
+```
+
+Re-running `powermcp install` pre-checks the tools you've already installed or configured, so it **preserves and updates** your setup instead of resetting to the core tools. Paths for tools like LTSpice are **auto-detected and pre-filled**, so you can usually just press Enter.
+
+### CLI commands
+
+| Command | Description |
+|---|---|
+| `powermcp install` | Setup wizard — interactive, or `--tools <ids>` / `--all` (also `--dry-run`, `--yes`, `--clients`) |
+| `powermcp run <tool>` | Launch a server over stdio (used by the generated client config) |
+| `powermcp list` | List the available tools, extras, and Windows-only flags |
+| `powermcp doctor` | Check each tool's dependencies and configured paths |
+| `powermcp config show` / `config set <tool>.<key> <path>` | Inspect / set local software paths |
+
+### Closed-source / EXE-based tools
+
+These tools wrap commercial or locally-installed software, so PowerMCP stores the local path in `~/.powermcp/config.toml` (captured by `powermcp install`, or set manually with `powermcp config set`):
+
+| Tool | Config keys | Example |
+|---|---|---|
+| PSS/E | `psse.python_lib`, `psse.bin` | `powermcp config set psse.python_lib "C:\Program Files\PTI\PSSE36\36.2\PSSPY311"` |
+| PSLF | `pslf.python_lib` | `powermcp config set pslf.python_lib "C:\Program Files\GE PSLF\PSLF_PYTHON"` |
+| PowerFactory | `powerfactory.python_path` | `powermcp config set powerfactory.python_path "...\DIgSILENT\PowerFactory 2024\Python\3.11"` |
+| LTSpice | `ltspice.exe` *(auto-detected)* | Found automatically in standard locations — usually no setup needed. Override: `powermcp config set ltspice.exe "C:\Program Files\ADI\LTspice\LTspice.exe"` |
+| HOPE | `hope.repo_root`, `hope.julia_bin` | `powermcp config set hope.repo_root "C:\src\HOPE"` |
+| GenX | `genx.repo_root` | `powermcp config set genx.repo_root "/home/me/GenX.jl"` — the GenX.jl checkout; `GENX_DIR` overrides it |
+| PowerWorld | *(none)* | `esa` auto-discovers a running, licensed Simulator via COM; the `powerworld` extra also installs `numba` (required by esa) |
+| PSCAD | *(none)* | `pip install powermcp[pscad-windows]` provides `mhi-pscad`; PSCAD must be installed |
+
+> The Codex *Desktop* app on Windows has been reported to overwrite `~/.codex/config.toml`; the Codex *CLI* is unaffected. If you use both, re-run `powermcp install` after Desktop edits.
 
 ### Case compilation between servers (PowerIO)
 
-PowerMCP uses PowerIO as the canonical exchange substrate for cross-server case conversion and matrix construction. Parse a case once, pass its JSON transport between tools, and materialize runtime files only when a backend requires them.
+PowerMCP runs the MCP server that [powerio](https://github.com/eigenergy/powerio) ships in its own wheel, as a **core dependency** (no extra needed) — `powermcp run powerio` is `python -m powerio.mcp`, so a powerio release that adds tools or changes their implementation needs no local server copy. It parses transmission and distribution formats into canonical JSON transports, converts between target artifacts with fidelity warnings, and builds the sparse matrices solvers need (B', B'', Y_bus, PTDF, LODF, Laplacian, LACPF).
 
-## 🧪 Testing
+Its JSON transport is the exchange format between PowerMCP servers: parse a case once, pass the returned `json` string between tool calls, and save runtime artifacts only when a backend needs a file. Existing `json` transport workflows remain supported.
 
-The Security Audit unit tests can be run with:
+```text
+parse(path="case9.raw")                            # powerio server -> {"json": ..., "summary": ...}
+load_network_from_json(network_json=...)           # pandapower server ingests the transport
+load_model_from_json(network_json=...)             # egret server stages it as a solvable case file
+import_case_from_json(network_json=..., output_path="case9.nc")  # PyPSA server writes a .nc for its tools
+matrix(kind="ptdf", json=...)                     # powerio server builds matrices from it
+save(to_format="psse", out_path="case9.raw", json=...)  # stage a file for path only servers
+```
+
+PowerIO also supports the `.pio.json` package transport, which carries the model plus package metadata and structured diagnostics.
+
+```text
+parsed = parse(path="case9.raw", transport="package")
+pkg = parsed["package_json"]
+summary(package_json=pkg)
+matrix(kind="ptdf", package_json=pkg)
+save(to_format="psse", out_path="case9.raw", package_json=pkg)
+diagnostics(package_json=pkg)
+```
+
+A package can also retain provenance and source maps, stable row identities, validation state, operating-point series, cumulative study commits, and lowering history. The canonical PowerIO MCP tools continue to own that package lifecycle. PowerMCP uses the package only at the solver boundary.
+
+`summary` returns the canonical nested shape used by PowerIO and PowerMCP: counts live under `elements` (`elements.buses`, `elements.branches`, `elements.generators`) and topology metadata lives under `topology` (`topology.connected_components`, `topology.reference_buses`).
+
+PowerIO MCP tools accept local paths and `file://` URIs. Nonlocal URI schemes are rejected. Set `POWERIO_MCP_ALLOWED_ROOTS` to an `os.pathsep` separated list of directories to constrain paths handled by the shared PowerIO sandbox.
+
+### Running from a clone (without installing)
+
+Every bundled server is still a standalone script. Clone the repo and run any server directly for use in Claude Desktop:
+
+```bash
+python pandapower/panda_mcp.py
+python SecurityAudit/security_audit_mcp.py
+python PSSE/psse_mcp.py
+python -m powerio.mcp
+```
+
+### Testing with your LLMs
+
+> **Note:** All MCPs should be tested via an MCP client (Claude Desktop, Claude Code, or Codex) before submitting a PR to ensure consistency.
+
+`powermcp install` writes the client configuration for you. The generated entries look like the example in [`config.json`](config.json).
+
+### Security Audit testing
 
 ```bash
 pytest SecurityAudit/tests/test_security_audit.py -v
 ```
 
-The existing backend-specific test suites remain unchanged.
+The tests cover severity calculation, deterministic ranking, aggregate risk classification, and report generation without requiring a commercial simulator.
 
 ## 📚 Documentation
 
 For detailed documentation about MCP, please visit:
 - [Model Context Protocol documentation](https://modelcontextprotocol.io/introduction)
 - [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk)
+- [Other General MCP Servers](https://smithery.ai/)
 
 ## 🤝 Contributing
 
@@ -118,8 +209,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## 🙏 Acknowledgments
 
 ### Core Team
-- Qian Zhang, Steven Black, Paulo Radatz, Andrea Pomarico, Muhy Eddin Za’ter, Luan Lopes dos Santos, Stephen Jenkins, Maanas Goel, Shen Wang, Drew Gray, Samuel Talkington
+- [Qian Zhang](https://www.linkedin.com/in/qian-zhang-75323111b/), [Steven Black](https://www.linkedin.com/in/steven-black-09322b31/), [Paulo Radatz](https://www.linkedin.com/in/pauloradatz/), [Andrea Pomarico](https://www.linkedin.com/in/andrea-pomarico-2695a2218/), [Muhy Eddin Za’ter](https://scholar.google.com/citations?user=_IFFYFAAAAAJ&hl=en), [Luan Lopes](https://www.linkedin.com/in/luan-lopes/), [Stephen Jenkins](https://www.linkedin.com/in/stephenjenkins2/), [Maanas Goel](https://www.linkedin.com/in/maanas-goel/), [Shen Wang](https://www.linkedin.com/in/swang16/), [Drew Gray](https://www.linkedin.com/in/drew-gray-b09ba426/), [Samuel Talkington](https://samueltalkington.com/)
 
 ### Special Thanks
 - All contributors who help make this project better
-- The Power and AI Initiative (PAI) at Harvard SEAS
+- [The Power and AI Initiative (PAI) at Harvard SEAS](https://pai.seas.harvard.edu/)
