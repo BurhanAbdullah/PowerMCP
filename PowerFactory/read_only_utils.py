@@ -6,18 +6,48 @@ read-only handlers can be exercised without a live PowerFactory installation.
 
 from __future__ import annotations
 
+import importlib
 import math
 from typing import Any, Callable
 
 
 def get_read_only_application(agent: Any) -> Any:
-    """Acquire a PowerFactory application for a read-only operation.
+    """Acquire a PowerFactory application without requiring a prior connection.
 
-    Read-only tools must not depend on a previously populated ``_shared_app``.
-    The agent's normal lazy connection path is the single source of truth.
+    Prefer the agent's explicit lazy-connection hook when available.  The
+    compatibility fallback is intentionally read-only: it obtains the vendor
+    application handle but does not activate a project or show the GUI.
     """
 
-    return agent._get_application(open_digsilent=False)
+    get_application = getattr(agent, "_get_application", None)
+    if callable(get_application):
+        return get_application(open_digsilent=False)
+
+    shared_app = getattr(agent, "_shared_app", None)
+    if shared_app is not None:
+        return shared_app
+
+    module = importlib.import_module(agent.__module__)
+    ensure_path = getattr(module, "_ensure_powerfactory_on_path", None)
+    if callable(ensure_path):
+        ensure_path()
+
+    pf = getattr(module, "pf", None)
+    if pf is None:
+        pf = importlib.import_module("powerfactory")
+        setattr(module, "pf", pf)
+
+    app = pf.GetApplicationExt()
+    if app is None:
+        raise RuntimeError("GetApplicationExt() returned None")
+
+    # Keep the process-level handle aligned with the normal agent connection
+    # path so subsequent read/write operations can reuse the same application.
+    try:
+        setattr(agent, "_shared_app", app)
+    except Exception:
+        pass
+    return app
 
 
 def read_only_error(exc: Exception) -> dict[str, Any]:
