@@ -1,0 +1,9 @@
+[project]
+name = "powermcp-sienna"
+version = "0.1.0"
+description = "PowerMCP SIENNA connector"
+requires-python = ">=3.10"
+dependencies = ["r2x"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
