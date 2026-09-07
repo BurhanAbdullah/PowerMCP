@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import math
+import sys
+import types
 
 from PowerFactory.read_only_utils import (
     call_read_only,
@@ -68,3 +70,28 @@ def test_read_only_error_preserves_exception_type_and_message():
     assert result["success"] is False
     assert result["error_type"] == "ValueError"
     assert result["message"] == "bad attribute"
+
+
+def test_read_only_fallback_connects_without_agent_lazy_hook(monkeypatch):
+    class FakePowerFactory:
+        def __init__(self):
+            self.app = object()
+            self.calls = 0
+
+        def GetApplicationExt(self):
+            self.calls += 1
+            return self.app
+
+    fake_pf = FakePowerFactory()
+    module = types.ModuleType("fake_powerfactory_agent")
+    module.pf = fake_pf
+    module._ensure_powerfactory_on_path = lambda: None
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+
+    class LegacyAgent:
+        __module__ = module.__name__
+        _shared_app = None
+
+    assert get_read_only_application(LegacyAgent) is fake_pf.app
+    assert LegacyAgent._shared_app is fake_pf.app
+    assert fake_pf.calls == 1
