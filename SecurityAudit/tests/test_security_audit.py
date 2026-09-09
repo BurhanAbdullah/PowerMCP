@@ -1,5 +1,8 @@
 """Unit tests for the PowerMCP Security Audit server."""
 
+import pytest
+
+from SecurityAudit.audit_utils import contingency_record, validate_limits
 from SecurityAudit.security_audit_mcp import _audit_summary, _rank, _severity, render_security_report
 
 
@@ -47,3 +50,57 @@ def test_report_contains_engineering_summary():
     assert report["status"] == "success"
     assert "PowerMCP Security Audit" in report["markdown"]
     assert "line_7" in report["markdown"]
+
+
+def test_validate_limits_rejects_non_finite_values():
+    with pytest.raises(ValueError, match="finite"):
+        validate_limits(float("nan"), 1.05, 100.0)
+
+
+def test_validate_limits_rejects_invalid_ranges():
+    with pytest.raises(ValueError, match="0 < min < max"):
+        validate_limits(1.05, 0.95, 100.0)
+    with pytest.raises(ValueError, match="loading_limit_pct must be > 0"):
+        validate_limits(0.95, 1.05, 0.0)
+
+
+def test_contingency_record_normalizes_identity_and_defaults():
+    record = contingency_record(
+        contingency=123,
+        element_type="line",
+        element_index=7,
+        converged=False,
+        voltage_violations=2,
+        thermal_violations=3,
+        error="solver failed",
+    )
+    assert record == {
+        "contingency": "123",
+        "element_type": "line",
+        "element_index": "7",
+        "converged": False,
+        "voltage_violations": 2,
+        "thermal_violations": 3,
+        "error": "solver failed",
+    }
+
+
+def test_contingency_record_is_json_friendly_for_index_types():
+    record = contingency_record(
+        contingency="line_1",
+        element_type="line",
+        element_index="L1",
+        converged=True,
+    )
+    assert record["element_index"] == "L1"
+    assert isinstance(record["converged"], bool)
+
+
+def test_audit_summary_does_not_mutate_input_order():
+    original = [
+        {"contingency": "b", "severity": 1.0, "converged": True},
+        {"contingency": "a", "severity": 2.0, "converged": True},
+    ]
+    snapshot = [dict(item) for item in original]
+    _audit_summary({"converged": True}, original, "test")
+    assert original == snapshot
