@@ -12,6 +12,8 @@ from typing import Any, Dict, List, Optional
 from mcp.server.fastmcp import FastMCP
 from common.utils import PowerError, power_mcp_tool
 
+from SecurityAudit.audit_utils import contingency_record, validate_limits
+
 mcp = FastMCP("PowerMCP Security Audit")
 
 
@@ -75,10 +77,14 @@ def audit_pandapower_network(
     try:
         import pandapower as pp
 
-        if not 0 < voltage_min_pu < voltage_max_pu:
-            raise ValueError("voltage limits must satisfy 0 < min < max")
-        if loading_limit_pct <= 0:
-            raise ValueError("loading_limit_pct must be > 0")
+        validate_limits(voltage_min_pu, voltage_max_pu, loading_limit_pct)
+        if not isinstance(file_path, str) or not file_path.strip():
+            raise ValueError("file_path must be a non-empty string")
+        if not isinstance(include_transformers, bool):
+            raise ValueError("include_transformers must be a boolean")
+        if max_contingencies is not None and (not isinstance(max_contingencies, int) or isinstance(max_contingencies, bool)):
+            raise ValueError("max_contingencies must be an integer or null")
+
         if file_path.endswith(".json"):
             net = pp.from_json(file_path)
         elif file_path.endswith(".p"):
@@ -101,24 +107,31 @@ def audit_pandapower_network(
         for kind, idx in jobs:
             case = original.deepcopy()
             case[kind].at[idx, "in_service"] = False
+            contingency = contingency_record(
+                contingency=f"{kind}_{idx}",
+                element_type=kind,
+                element_index=idx,
+                converged=False,
+            )
             try:
                 pp.runpp(case)
                 vbad = case.res_bus[(case.res_bus.vm_pu < voltage_min_pu) | (case.res_bus.vm_pu > voltage_max_pu)]
                 lbad = case.res_line[case.res_line.loading_percent > loading_limit_pct]
                 tbad = case.res_trafo[case.res_trafo.loading_percent > loading_limit_pct]
                 vv, tv = int(len(vbad)), int(len(lbad) + len(tbad))
-                results.append({
-                    "contingency": f"{kind}_{idx}", "element_type": kind, "element_index": idx,
-                    "converged": bool(case.converged), "voltage_violations": vv, "thermal_violations": tv,
-                    "min_voltage_pu": round(float(case.res_bus.vm_pu.min()), 6) if len(case.res_bus) else None,
-                    "max_line_loading_pct": round(float(case.res_line.loading_percent.max()), 6) if len(case.res_line) else None,
-                    "max_trafo_loading_pct": round(float(case.res_trafo.loading_percent.max()), 6) if len(case.res_trafo) else None,
-                    "severity": _severity(vv, tv, bool(case.converged)),
-                })
+                contingency.update(
+                    converged=bool(case.converged),
+                    voltage_violations=vv,
+                    thermal_violations=tv,
+                    min_voltage_pu=round(float(case.res_bus.vm_pu.min()), 6) if len(case.res_bus) else None,
+                    max_voltage_pu=round(float(case.res_bus.vm_pu.max()), 6) if len(case.res_bus) else None,
+                    max_line_loading_pct=round(float(case.res_line.loading_percent.max()), 6) if len(case.res_line) else None,
+                    max_trafo_loading_pct=round(float(case.res_trafo.loading_percent.max()), 6) if len(case.res_trafo) else None,
+                )
             except Exception as exc:
-                results.append({"contingency": f"{kind}_{idx}", "element_type": kind, "element_index": idx,
-                                "converged": False, "voltage_violations": 0, "thermal_violations": 0,
-                                "severity": 10.0, "error": str(exc)})
+                contingency["error"] = str(exc)
+            contingency["severity"] = _severity(contingency["voltage_violations"], contingency["thermal_violations"], contingency["converged"])
+            results.append(contingency)
         return _audit_summary(base, results, "pandapower")
     except Exception as exc:
         return PowerError(status="error", message=f"pandapower security audit failed: {exc}")
@@ -137,10 +150,11 @@ def audit_pypsa_network(
         import numpy as np
         from pypsa import Network
 
-        if not 0 < voltage_min_pu < voltage_max_pu:
-            raise ValueError("voltage limits must satisfy 0 < min < max")
-        if loading_limit_pct <= 0:
-            raise ValueError("loading_limit_pct must be > 0")
+        validate_limits(voltage_min_pu, voltage_max_pu, loading_limit_pct)
+        if not isinstance(network_name, str) or not network_name.strip():
+            raise ValueError("network_name must be a non-empty string")
+        if max_contingencies is not None and (not isinstance(max_contingencies, int) or isinstance(max_contingencies, bool)):
+            raise ValueError("max_contingencies must be an integer or null")
 
         network = Network(network_name)
         network.pf()
@@ -161,13 +175,16 @@ def audit_pypsa_network(
         results: List[Dict[str, Any]] = []
         for line in lines:
             case = Network(network_name)
-            # PyPSA uses the active flag for topology status; keep the original
-            # model untouched by loading a fresh network for every contingency.
             if "active" in case.lines.columns:
                 case.lines.at[line, "active"] = False
             else:
-                # Compatibility fallback for versions without an active column.
                 case.lines.at[line, "x"] = np.inf
+            contingency = contingency_record(
+                contingency=f"line_{line}",
+                element_type="line",
+                element_index=line,
+                converged=False,
+            )
             try:
                 case.pf()
                 p = case.lines_t.p0[line] if line in case.lines_t.p0.columns else None
@@ -179,14 +196,15 @@ def audit_pypsa_network(
                     qvals = np.asarray(q, dtype=float) if q is not None else np.zeros_like(pvals)
                     loading = float(np.nanmax(np.sqrt(pvals ** 2 + qvals ** 2)) / s_nom * 100.0)
                 tv = int(loading is not None and loading > loading_limit_pct)
-                results.append({"contingency": f"line_{line}", "element_type": "line", "element_index": str(line),
-                                "converged": True, "voltage_violations": 0, "thermal_violations": tv,
-                                "max_loading_pct": round(loading, 6) if loading is not None else None,
-                                "severity": _severity(0, tv, True)})
+                contingency.update(
+                    converged=True,
+                    thermal_violations=tv,
+                    max_loading_pct=round(loading, 6) if loading is not None else None,
+                )
             except Exception as exc:
-                results.append({"contingency": f"line_{line}", "element_type": "line", "element_index": str(line),
-                                "converged": False, "voltage_violations": 0, "thermal_violations": 0,
-                                "severity": 10.0, "error": str(exc)})
+                contingency["error"] = str(exc)
+            contingency["severity"] = _severity(contingency["voltage_violations"], contingency["thermal_violations"], contingency["converged"])
+            results.append(contingency)
         return _audit_summary(base, results, "PyPSA")
     except Exception as exc:
         return PowerError(status="error", message=f"PyPSA security audit failed: {exc}")
