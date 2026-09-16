@@ -1,9 +1,8 @@
 name: Branch Validation
 
 on:
-  push:
-    branches:
-      - 'fix/audit-on-powerio-0112'
+  pull_request:
+    branches: [main]
 
 jobs:
   test:
