@@ -25,7 +25,8 @@ def test_audit_flags_reversed_voltage_limits():
 
 def test_audit_flags_nonfinite_voltage_limit():
     net = pp.create_empty_network()
-    pp.create_bus(net, vn_kv=110, min_vm_pu=float("nan"), max_vm_pu=1.05)
+    bus = pp.create_bus(net, vn_kv=110, min_vm_pu=0.95, max_vm_pu=1.05)
+    net.bus.at[bus, "min_vm_pu"] = float("nan")
     report = audit_network(net)
     assert report.status == "error"
     assert any(f.code == "BUS_MIN_VM_INVALID" for f in report.findings)
