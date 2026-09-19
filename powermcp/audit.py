@@ -68,10 +68,13 @@ def audit_network(net: Any) -> AuditReport:
                 ("min_vm_pu", 0.0, 1.1, "BUS_MIN_VM_INVALID"),
                 ("max_vm_pu", 0.9, 2.0, "BUS_MAX_VM_INVALID"),
             ):
-                if col in row and row[col] is not None and finite(row[col]):
-                    value = float(row[col])
-                    if not (lo <= value <= hi):
-                        add("error", code, f"{col}={value} is outside a valid range.", "bus", int(idx))
+                if col in row and row[col] is not None:
+                    if not finite(row[col]):
+                        add("error", code, f"{col} must be finite.", "bus", int(idx))
+                    else:
+                        value = float(row[col])
+                        if not (lo <= value <= hi):
+                            add("error", code, f"{col}={value} is outside a valid range.", "bus", int(idx))
             if "min_vm_pu" in row and "max_vm_pu" in row:
                 minimum = row["min_vm_pu"]
                 maximum = row["max_vm_pu"]
