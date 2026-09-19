@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+
 import pandapower as pp
 
 from powermcp.audit import audit_network
@@ -19,6 +21,14 @@ def test_audit_flags_reversed_voltage_limits():
     report = audit_network(net)
     assert report.status == "error"
     assert any(f.code == "BUS_VOLTAGE_RANGE_REVERSED" for f in report.findings)
+
+
+def test_audit_flags_nonfinite_voltage_limit():
+    net = pp.create_empty_network()
+    pp.create_bus(net, vn_kv=110, min_vm_pu=float("nan"), max_vm_pu=1.05)
+    report = audit_network(net)
+    assert report.status == "error"
+    assert any(f.code == "BUS_MIN_VM_INVALID" for f in report.findings)
 
 
 def test_audit_flags_invalid_line():
@@ -43,10 +53,22 @@ def test_audit_flags_invalid_line():
     assert "LINE_MISSING_RATING" in codes
 
 
-def test_audit_does_not_run_power_flow():
+def test_audit_does_not_run_power_flow_or_mutate_network():
     net = pp.create_empty_network()
     pp.create_bus(net, vn_kv=110)
+    before = copy.deepcopy(net)
     original = net.converged
     report = audit_network(net)
     assert net.converged == original
+    assert net.bus.equals(before.bus)
     assert report.status == "ok"
+
+
+def test_audit_report_is_json_serializable_and_stable():
+    net = pp.create_empty_network()
+    pp.create_bus(net, vn_kv=110, min_vm_pu=1.10, max_vm_pu=1.00)
+    first = audit_network(net).to_dict()
+    second = audit_network(net).to_dict()
+    assert first == second
+    assert isinstance(first["findings"], list)
+    assert all(set(f) == {"severity", "code", "message", "element", "index"} for f in first["findings"])
