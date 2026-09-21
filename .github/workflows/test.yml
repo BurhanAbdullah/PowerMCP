@@ -31,8 +31,8 @@ jobs:
           python -m pip install --upgrade pip
           # [pscad] is psutil, which PSCAD/tests import. [surge] is surge-py,
           # whose marker (>=3.12,<3.15) leaves it uninstalled on 3.10, where the
-          # suite skips itself.
-          python -m pip install -e ".[pscad,surge]" pytest
+          # suite skips itself. `build` is used by the packaging smoke tests.
+          python -m pip install -e ".[pscad,surge]" pytest build
 
       - name: Run tests
         run: >-
