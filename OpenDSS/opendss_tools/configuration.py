@@ -7,7 +7,7 @@ from mcp.server.mcpserver import MCPServer as FastMCP
 from py_dss_toolkit import dss_tools
 
 from core import state
-from core.engine import dss
+from core.engine import get_dss
 from powermcp.sandbox import (
     PathNotAllowed,
     allowed_roots,
@@ -36,6 +36,10 @@ def compile_opendss_file(dss_file: str, force_recompile: bool = False) -> Dict[s
     except PathNotAllowed as exc:
         return _err(str(exc))
     resolved = str(Path(dss_file).resolve())
+    try:
+        get_dss()
+    except Exception as e:
+        return _err(str(e))
     if (
         state.circuit_loaded
         and state.last_compiled_dss_file is not None
@@ -80,7 +84,7 @@ def compile_opendss_file(dss_file: str, force_recompile: bool = False) -> Dict[s
 def clear_all_opendss_memory() -> Dict[str, Any]:
     """Clear OpenDSS engine memory (ClearAll); resets circuit_loaded, solution_available, and last compiled path."""
     try:
-        dss.text("ClearAll")
+        get_dss().text("ClearAll")
         state.circuit_loaded = False
         state.solution_available = False
         state.last_compiled_dss_file = None
