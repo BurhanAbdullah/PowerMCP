@@ -120,3 +120,38 @@ def test_launch_powerio_runs_powerios_own_module(record_mcp_run, monkeypatch):
     runner.launch("powerio")
     assert seen == ["powerio.mcp"]
     assert len(record_mcp_run) == 1
+
+
+def test_preflight_reports_incompatible_tool_version(monkeypatch):
+    monkeypatch.setattr(runner, "incompatible_requirement", lambda probe: (
+        ("powerio", "powerio 0.8.0 does not satisfy <0.12,>=0.11.2")
+        if probe == "powerio" else None
+    ))
+    monkeypatch.setattr(runner, "probe_installed", lambda probe: True)
+
+    with pytest.raises(runner.LaunchError) as exc:
+        runner._preflight(runner.get_tool("powerio"))
+
+    message = str(exc.value)
+    assert "powerio 0.8.0 does not satisfy" in message
+    assert "Reinstall with" in message
+
+
+def test_requirement_for_probe_handles_dotted_module(monkeypatch):
+    monkeypatch.setattr(
+        runner.importlib.metadata,
+        "requires",
+        lambda _: ("mhi-pscad>=1.2",),
+    )
+    req = runner.incompatible_requirement("mhi.pscad")
+    assert req is None
+
+
+def test_incompatible_requirement_ignores_satisfied_version(monkeypatch):
+    monkeypatch.setattr(
+        runner.importlib.metadata,
+        "requires",
+        lambda _: ("powerio>=0.11.2,<0.12",),
+    )
+    monkeypatch.setattr(runner.importlib.metadata, "version", lambda _: "0.11.2")
+    assert runner.incompatible_requirement("powerio") is None
