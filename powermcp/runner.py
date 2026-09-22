@@ -22,6 +22,7 @@ import importlib.util
 import runpy
 import sys
 
+from ._dependency import incompatible_requirement
 from .registry import Tool, get_tool, install_hint
 
 
@@ -82,6 +83,14 @@ def _preflight(tool: Tool) -> None:
             f"{tool.display}: required package '{tool.probe.split('.')[0]}' is not installed.\n"
             f"  Install it with:  {install_hint(tool.extra)}"
         )
+    if tool.probe:
+        incompatible = incompatible_requirement(tool.probe)
+        if incompatible:
+            _, message = incompatible
+            raise LaunchError(
+                f"{tool.display}: {message}.\n"
+                f"  Reinstall with:  {install_hint(tool.extra)}"
+            )
 
 
 def _launch_script(tool: Tool) -> None:
