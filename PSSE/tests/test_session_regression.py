@@ -221,3 +221,33 @@ def test_lookup_and_search_remain_available_after_operations(
 
     assert search["status"] == "success", search
     assert search["count"] > 0
+
+
+def test_structured_case_inspection(psse: Any, case: str):
+    """The structured inspection tool must report loaded case dimensions."""
+    opened = psse.open_case(case)
+    assert opened["status"] == "success", opened
+    inspected = psse.inspect_case()
+    assert inspected["status"] == "success", inspected
+    assert inspected["case_info"] == {
+        "num_buses": opened["case_info"]["num_buses"],
+        "num_branches": opened["case_info"]["num_branches"],
+        "num_generators": opened["case_info"]["num_generators"],
+    }
+
+
+def test_structured_power_flow_summary(psse: Any, case: str):
+    """A real PSS/E solve must produce internally consistent summary data."""
+    opened = psse.open_case(case)
+    assert opened["status"] == "success", opened
+    result = psse.run_power_flow(top_n=5)
+    assert result["status"] == "success", result
+    assert result["solve"]["status"] == "success", result
+    assert result["solve"]["ierr"] == 0
+    assert result["buses"]["count"] == opened["case_info"]["num_buses"]
+    assert result["branches"]["count"] == opened["case_info"]["num_branches"]
+    assert result["buses"]["min_voltage_pu"] <= result["buses"]["max_voltage_pu"]
+    assert result["branches"]["overloaded_count"] >= 0
+    assert len(result["buses"]["low_voltage"]) <= 5
+    assert len(result["buses"]["high_voltage"]) <= 5
+    assert len(result["branches"]["overloaded"]) <= 5
