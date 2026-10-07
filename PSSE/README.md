@@ -36,6 +36,8 @@ Configure in your MCP client (e.g., Cursor, Claude Desktop):
 
 - **open_case(case: str)**: Open a PSSE case file.
 - **solve_case()**: Solve power flow using PSSE Newton-Raphson method.
+- **inspect_case()**: Inspect the loaded case and return bus, branch, and generator counts.
+- **run_power_flow(voltage_min, voltage_max, loading_limit, top_n)**: Solve the case and return structured voltage-violation and branch-overload summaries using PSS/E post-solve queries.
 - **run_psspy_command(function_name, arguments)**: Execute an allowed psspy API command by name using the JSON reference spec. Commands that load or execute external code are excluded.
 - **lookup_psspy_command(function_name)**: Look up the API reference for a psspy function without executing it.
 - **search_psspy_commands(query, category)**: Search the psspy API index for functions matching a query.
@@ -49,3 +51,7 @@ Configure in your MCP client (e.g., Cursor, Claude Desktop):
 ## Resources
 
 - [PSS/E Documentation](https://www.siemens-energy.com/)
+
+### Licensing boundary
+
+PSS/E is proprietary software. This MCP server is an adapter around the user's separately installed and licensed PSS/E/PSSPY environment; it does not redistribute PSS/E executables, runtime libraries, licenses, or proprietary vendor files.
