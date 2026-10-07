@@ -30,4 +30,4 @@ jobs:
           python -m pip install -e . pytest
 
       - name: Run tests
-        run: python -m pytest tests/ -q
+        run: python -m pytest tests/ PSSE/tests/ -q
