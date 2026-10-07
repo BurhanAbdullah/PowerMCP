@@ -896,5 +896,226 @@ def read_dynamic_output(
         }
 
 
+
+def _first_column(values: Any) -> List[Any]:
+    """Normalize PSS/E's column-major array return to one Python list."""
+    if values is None:
+        return []
+    if isinstance(values, (list, tuple)):
+        if len(values) == 1 and isinstance(values[0], (list, tuple)):
+            return list(values[0])
+        return list(values)
+    return [values]
+
+
+def _require_nonnegative_int(value: Any, name: str) -> int:
+    """Validate an MCP integer option without accepting booleans."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{name} must be a non-negative integer")
+    return value
+
+
+def _read_case_counts() -> Dict[str, int]:
+    """Read basic working-case counts through stable PSS/E query APIs."""
+    queries = (
+        ("num_buses", "abuscount", {"flag": 2}),
+        ("num_branches", "abrncount", {"flag": 4}),
+        ("num_generators", "amachcount", {"flag": 4}),
+    )
+    counts: Dict[str, int] = {}
+    for name, function_name, kwargs in queries:
+        func = _get_psspy_func(function_name)
+        result = func(**kwargs)
+        ierr, value = result[0], result[1]
+        if ierr != 0:
+            raise RuntimeError(f"psspy.{function_name} returned ierr={ierr}")
+        counts[name] = int(value or 0)
+    return counts
+
+
+def _power_flow_summary(
+    *,
+    voltage_min: float,
+    voltage_max: float,
+    loading_limit: float,
+    top_n: int,
+) -> Dict[str, Any]:
+    """Collect deterministic post-solve voltage and branch-loading summaries."""
+    if voltage_min >= voltage_max:
+        raise ValueError("voltage_min must be less than voltage_max")
+    if loading_limit < 0:
+        raise ValueError("loading_limit must be non-negative")
+
+    ierr, bus_numbers_raw = psspy.abusint(
+        sid=-1, flag=2, string=["NUMBER"]
+    )
+    if ierr != 0:
+        raise RuntimeError(f"psspy.abusint returned ierr={ierr}")
+    ierr, voltage_raw = psspy.abusreal(
+        sid=-1, flag=2, string=["PU"]
+    )
+    if ierr != 0:
+        raise RuntimeError(f"psspy.abusreal returned ierr={ierr}")
+
+    bus_numbers = _first_column(bus_numbers_raw)
+    voltages = _first_column(voltage_raw)
+    if len(bus_numbers) != len(voltages):
+        raise RuntimeError(
+            "PSS/E returned mismatched bus-number and voltage arrays"
+        )
+    if not voltages:
+        raise RuntimeError("PSS/E returned no bus voltage data")
+
+    bus_records = [
+        {"bus": int(bus), "voltage_pu": float(voltage)}
+        for bus, voltage in zip(bus_numbers, voltages)
+    ]
+    low_voltage = sorted(
+        (row for row in bus_records if row["voltage_pu"] < voltage_min),
+        key=lambda row: row["voltage_pu"],
+    )
+    high_voltage = sorted(
+        (row for row in bus_records if row["voltage_pu"] > voltage_max),
+        key=lambda row: row["voltage_pu"],
+        reverse=True,
+    )
+
+    ierr, from_numbers_raw = psspy.abrnint(
+        sid=-1, owner=1, ties=3, flag=3, entry=1,
+        string=["FROMNUMBER"],
+    )
+    if ierr != 0:
+        raise RuntimeError(f"psspy.abrnint returned ierr={ierr}")
+    ierr, to_numbers_raw = psspy.abrnint(
+        sid=-1, owner=1, ties=3, flag=3, entry=1,
+        string=["TONUMBER"],
+    )
+    if ierr != 0:
+        raise RuntimeError(f"psspy.abrnint returned ierr={ierr}")
+    ierr, ids_raw = psspy.abrnchar(
+        sid=-1, owner=1, ties=3, flag=3, entry=1,
+        string=["ID"],
+    )
+    if ierr != 0:
+        raise RuntimeError(f"psspy.abrnchar returned ierr={ierr}")
+    ierr, loading_raw = psspy.abrnreal(
+        sid=-1, owner=1, ties=3, flag=3, entry=1,
+        string=["MAXPCTRATE"],
+    )
+    if ierr != 0:
+        raise RuntimeError(f"psspy.abrnreal returned ierr={ierr}")
+
+    from_numbers = _first_column(from_numbers_raw)
+    to_numbers = _first_column(to_numbers_raw)
+    circuit_ids = _first_column(ids_raw)
+    loadings = _first_column(loading_raw)
+    if len({len(from_numbers), len(to_numbers), len(circuit_ids), len(loadings)}) != 1:
+        raise RuntimeError("PSS/E returned mismatched branch arrays")
+
+    branches = [
+        {
+            "from_bus": int(from_bus),
+            "to_bus": int(to_bus),
+            "id": str(circuit_id).strip(),
+            "loading_pct": float(loading),
+        }
+        for from_bus, to_bus, circuit_id, loading in zip(
+            from_numbers, to_numbers, circuit_ids, loadings
+        )
+    ]
+    overloaded = sorted(
+        (row for row in branches if row["loading_pct"] > loading_limit),
+        key=lambda row: row["loading_pct"],
+        reverse=True,
+    )
+
+    worst_bus = min(bus_records, key=lambda row: row["voltage_pu"])
+    highest_bus = max(bus_records, key=lambda row: row["voltage_pu"])
+    worst_branch = max(branches, key=lambda row: row["loading_pct"]) if branches else None
+
+    return {
+        "buses": {
+            "count": len(bus_records),
+            "min_voltage_pu": worst_bus["voltage_pu"],
+            "min_voltage_bus": worst_bus["bus"],
+            "max_voltage_pu": highest_bus["voltage_pu"],
+            "max_voltage_bus": highest_bus["bus"],
+            "low_voltage_count": len(low_voltage),
+            "high_voltage_count": len(high_voltage),
+            "low_voltage": low_voltage[:top_n],
+            "high_voltage": high_voltage[:top_n],
+        },
+        "branches": {
+            "count": len(branches),
+            "max_loading_pct": (
+                worst_branch["loading_pct"] if worst_branch else None
+            ),
+            "max_loading_branch": worst_branch,
+            "overloaded_count": len(overloaded),
+            "overloaded": overloaded[:top_n],
+        },
+        "limits": {
+            "voltage_min_pu": voltage_min,
+            "voltage_max_pu": voltage_max,
+            "loading_limit_pct": loading_limit,
+        },
+    }
+
+
+@mcp.tool()
+def inspect_case() -> Dict[str, Any]:
+    """
+    Inspect the currently loaded PSS/E working case.
+
+    Returns bus, branch, and generator counts without modifying the case.
+    A case must already be open.
+    """
+    try:
+        _ensure_psse()
+        return {"status": "success", "case_info": _read_case_counts()}
+    except Exception as exc:
+        return {"status": "error", "message": str(exc)}
+
+
+@mcp.tool()
+def run_power_flow(
+    voltage_min: float = 0.95,
+    voltage_max: float = 1.05,
+    loading_limit: float = 100.0,
+    top_n: int = 10,
+) -> Dict[str, Any]:
+    """
+    Solve the current PSS/E case and return an engineering summary.
+
+    The tool runs the existing Newton-Raphson solve, then reports voltage
+    violations and branch overloads using PSS/E post-solve query APIs.
+
+    Args:
+        voltage_min: Lower acceptable bus-voltage limit in pu.
+        voltage_max: Upper acceptable bus-voltage limit in pu.
+        loading_limit: Branch loading threshold in percent of the default
+            rating set.
+        top_n: Maximum number of violations returned in each category.
+    """
+    try:
+        top_n = _require_nonnegative_int(top_n, "top_n")
+        _ensure_psse()
+        solved = solve_case()
+        if solved.get("status") != "success":
+            return {"status": "error", "stage": "solve", "solve": solved}
+        summary = _power_flow_summary(
+            voltage_min=float(voltage_min),
+            voltage_max=float(voltage_max),
+            loading_limit=float(loading_limit),
+            top_n=top_n,
+        )
+        summary["solve"] = solved
+        summary["status"] = "success"
+        return summary
+    except (TypeError, ValueError) as exc:
+        return {"status": "error", "message": str(exc)}
+    except Exception as exc:
+        return {"status": "error", "message": str(exc)}
+
 if __name__ == "__main__":
     mcp.run(transport="stdio")
