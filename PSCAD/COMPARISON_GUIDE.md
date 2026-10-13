@@ -11,7 +11,7 @@ import time
 import mhi.pscad
 
 pscad = mhi.pscad.launch()
-project = pscad.load(r"C:\\temp\\vdiv.pscx")
+project = pscad.load(r"C:\temp\vdiv.pscx")
 project.parameters(R1="100 [ohm]")
 
 # Start the build/run without blocking on the whole simulation.
