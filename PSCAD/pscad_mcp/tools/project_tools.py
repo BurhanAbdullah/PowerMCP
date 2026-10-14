@@ -1,5 +1,7 @@
 from typing import List, Dict, Any, Optional
+import math
 import os
+import re
 from mcp.server.mcpserver import MCPServer as FastMCP
 from pscad_mcp.core.connection_manager import pscad_manager
 from pscad_mcp.core.executor import robust_executor
@@ -127,13 +129,114 @@ async def get_component_parameters(project_name: str, component_id: int) -> Dict
     params = await robust_executor.run_safe(component.parameters)
     return params if params else {}
 
+def values_equivalent(expected: Any, actual: Any) -> bool:
+    """Compare PSCAD values, including numeric strings with units.
+
+    PSCAD may return "100 [ohm]" even when the caller supplied 100.
+    Numeric comparisons use a small floating-point tolerance. If both values
+    declare units, their unit labels must match; this does not convert units.
+    """
+    if isinstance(expected, bool) or isinstance(actual, bool):
+        return type(expected) is type(actual) and expected == actual
+
+    if isinstance(expected, dict) and isinstance(actual, dict):
+        return expected.keys() == actual.keys() and all(
+            values_equivalent(expected[key], actual[key]) for key in expected
+        )
+    if isinstance(expected, (list, tuple)) and isinstance(actual, (list, tuple)):
+        return len(expected) == len(actual) and all(
+            values_equivalent(left, right) for left, right in zip(expected, actual)
+        )
+
+    def numeric_and_unit(value: Any) -> Optional[tuple]:
+        if isinstance(value, (int, float)):
+            number = float(value)
+            return (number, None) if math.isfinite(number) else None
+        if not isinstance(value, str):
+            return None
+        match = re.fullmatch(
+            r"\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)"
+            r"\s*(?:\[([^\]]+)\])?\s*",
+            value,
+        )
+        if not match:
+            return None
+        number = float(match.group(1))
+        if not math.isfinite(number):
+            return None
+        unit = match.group(2)
+        return number, unit.strip().casefold() if unit else None
+
+    expected_numeric = numeric_and_unit(expected)
+    actual_numeric = numeric_and_unit(actual)
+    if expected_numeric is not None and actual_numeric is not None:
+        expected_value, expected_unit = expected_numeric
+        actual_value, actual_unit = actual_numeric
+        if expected_unit and actual_unit and expected_unit != actual_unit:
+            return False
+        return math.isclose(expected_value, actual_value, rel_tol=1e-9, abs_tol=1e-12)
+
+    if isinstance(expected, str) and isinstance(actual, str):
+        return expected.strip() == actual.strip()
+    return type(expected) is type(actual) and expected == actual
+
+
 async def set_component_parameters(project_name: str, component_id: int, parameters: Dict[str, Any]) -> str:
-    """Set parameter values for a specific component."""
+    """Set component parameters and verify the values PSCAD actually retained.
+
+    The previous parameter map is captured before writing. If PSCAD rejects,
+    clamps, or only partially applies the requested values, the previous map
+    is restored and read back. Success is returned only after confirmation.
+    """
+    if not isinstance(parameters, dict):
+        raise TypeError("parameters must be a dictionary.")
+    if not parameters:
+        return f"No parameter changes requested for component {component_id}."
+
     pscad = pscad_manager.pscad
     project = await robust_executor.run_safe(pscad.project, project_name)
     component = await robust_executor.run_safe(project.component, component_id)
-    await robust_executor.run_safe(component.parameters, parameters=parameters)
-    return f"Parameters updated for component {component_id}."
+    previous = await robust_executor.run_safe(component.parameters)
+    if not isinstance(previous, dict) or not previous:
+        raise RuntimeError(
+            "Could not snapshot existing component parameters; refusing an unverified write."
+        )
+    previous = dict(previous)
+
+    try:
+        await robust_executor.run_safe(component.parameters, parameters=parameters)
+        observed = await robust_executor.run_safe(component.parameters)
+        observed = observed if isinstance(observed, dict) else {}
+        mismatches = [
+            name for name, expected in parameters.items()
+            if name not in observed or not values_equivalent(expected, observed[name])
+        ]
+        if mismatches:
+            raise RuntimeError(
+                "PSCAD did not retain the requested values for: " + ", ".join(sorted(mismatches))
+            )
+    except Exception as write_error:
+        try:
+            await robust_executor.run_safe(component.parameters, parameters=previous)
+            restored = await robust_executor.run_safe(component.parameters)
+            restored = restored if isinstance(restored, dict) else {}
+            restore_mismatches = [
+                name for name, expected in previous.items()
+                if name not in restored or not values_equivalent(expected, restored[name])
+            ]
+            if restore_mismatches:
+                raise RuntimeError(
+                    "rollback verification failed for: " + ", ".join(sorted(restore_mismatches))
+                )
+        except Exception as rollback_error:
+            raise RuntimeError(
+                f"Parameter update failed ({write_error}); rollback could not be verified ({rollback_error})."
+            ) from rollback_error
+        raise RuntimeError(
+            f"Parameter update failed; previous values were restored. {write_error}"
+        ) from write_error
+
+    return f"Parameters updated and verified for component {component_id}."
 
 async def validate_component_parameters(project_name: str, component_id: int, parameters: Dict[str, Any]) -> Dict[str, Any]:
     """Validate if the given parameters are within the legal range for a component."""
