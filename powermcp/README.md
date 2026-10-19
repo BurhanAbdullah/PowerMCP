@@ -270,7 +270,7 @@ copy ..\tests to a temp dir, then:  test-env\Scripts\python -m pytest <tempdir>\
 What the build gate confirms:
 - `pip install powermcp` pulls **core only** (no esa/andes/surge/psspy):
   `test-env\Scripts\python -m pip list`
-- the data files ship (2184 PSS/E JSONs, OpenDSS `13Bus/IEEELineCodes.DSS`, surge schema):
+- the data files ship (2184 PSS/E JSONs, OpenDSS `13Bus/IEEELineCodes.dss`, surge schema):
   inspect the wheel with `python -m zipfile -l dist\powermcp-*.whl`
 
 ### C. Manual smoke checks
