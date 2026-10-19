@@ -1,9 +1,8 @@
 """OpenDSS compile result verification.
 
-The compilation command returning without a Python exception does not guarantee
-that every Redirect/Compile statement succeeded. This helper inspects only the
-stable, structured readiness/summary information exposed by the toolkit; it
-does not attempt to parse vendor-specific diagnostic text.
+OpenDSS can leave a partial circuit when a Redirect/Compile command fails.
+This helper inspects stable structured metadata exposed by py-dss-toolkit;
+it deliberately avoids parsing free-form vendor diagnostics.
 """
 
 from __future__ import annotations
@@ -12,7 +11,7 @@ from typing import Any
 
 
 def compiled_circuit_error(readiness: Any, summary: Any) -> str | None:
-    """Return a diagnostic when exposed circuit metadata proves compile failed."""
+    """Return an error when structured readiness or model counts prove failure."""
     if isinstance(readiness, dict):
         for key in ("success", "ready", "is_ready", "circuit_ready"):
             if readiness.get(key) is False:
@@ -32,13 +31,10 @@ def compiled_circuit_error(readiness: Any, summary: Any) -> str | None:
 
 
 def _bus_count(summary: Any) -> int | float | None:
-    """Extract bus count only from known dictionary-shaped summary metadata."""
+    """Extract bus count from py-dss-toolkit's summary-record mapping."""
     if not isinstance(summary, dict):
         return None
-    counts = summary.get("counts", summary)
-    if not isinstance(counts, dict):
-        return None
-    value = counts.get("buses", counts.get("bus_count"))
+    value = summary.get("buses", summary.get("bus_count"))
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     return value
