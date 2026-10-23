@@ -69,7 +69,7 @@ def _python_lib_matches_interpreter(python_lib: Optional[str], pyver: str) -> bo
 
     if not python_lib:
         return False
-    match = re.fullmatch(r"(?i)PSSPY(\\d+)", os.path.basename(os.path.normpath(python_lib)))
+    match = re.fullmatch(r"(?i)PSSPY(\d+)", os.path.basename(os.path.normpath(python_lib)))
     return match is None or match.group(1) == pyver
 
 
