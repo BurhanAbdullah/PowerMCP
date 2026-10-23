@@ -40,14 +40,217 @@ psspy = None  # imported lazily by _ensure_psse()
 _psse_ready = False
 
 
+def _version_key(version_str: str) -> tuple:
+    """Return a sortable numeric version key (e.g. 37.1 > 36.2)."""
+    import re
+
+    parts = re.findall(r"\d+", str(version_str or ""))
+    return tuple(int(part) for part in parts) if parts else (0,)
+
+
+def _major_from_paths(*paths: Optional[str]) -> Optional[int]:
+    """Infer the PSS/E major from configured/install paths, if present."""
+    import re
+
+    for path in paths:
+        if not path:
+            continue
+        match = re.search(r"(?i)PSSE\s*(\d+)", str(path))
+        if match:
+            return int(match.group(1))
+    configured = os.environ.get("PSSE_VERSION", "")
+    match = re.match(r"\s*(\d+)", configured)
+    return int(match.group(1)) if match else None
+
+
+def _is_valid_psspy_dir(psspy_path: Optional[str], bin_path: Optional[str]) -> bool:
+    """Require real PSSPY and PSSBIN directories before selecting an install."""
+    if not psspy_path or not bin_path:
+        return False
+    if not (os.path.isdir(psspy_path) and os.path.isdir(bin_path)):
+        return False
+    return any(
+        os.path.isfile(os.path.join(psspy_path, "psspy" + extension))
+        for extension in (".py", ".pyc", ".pyd")
+    )
+
+
+def _psse_candidates_from_registry(pyver: str) -> list:
+    """Find all installed PSS/E versions registered for this Python version."""
+    candidates = []
+    try:
+        import winreg
+    except ImportError:
+        return candidates
+
+    try:
+        pti_key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\PTI")
+    except OSError:
+        return candidates
+
+    with pti_key:
+        index = 0
+        while True:
+            try:
+                product_name = winreg.EnumKey(pti_key, index)
+            except OSError:
+                break
+            index += 1
+            import re
+            match = re.fullmatch(r"(?i)PSSE\s*(\d+)", product_name)
+            if not match:
+                continue
+            major = int(match.group(1))
+            try:
+                major_key = winreg.OpenKey(pti_key, product_name)
+            except OSError:
+                continue
+            with major_key:
+                build_index = 0
+                while True:
+                    try:
+                        build_name = winreg.EnumKey(major_key, build_index)
+                    except OSError:
+                        break
+                    build_index += 1
+                    try:
+                        paths_key = winreg.OpenKey(
+                            major_key, rf"{build_name}\Product Paths"
+                        )
+                    except OSError:
+                        continue
+                    values = {}
+                    with paths_key:
+                        value_index = 0
+                        while True:
+                            try:
+                                name, value, _ = winreg.EnumValue(paths_key, value_index)
+                            except OSError:
+                                break
+                            value_index += 1
+                            values[name.lower()] = value
+                    psspy_path = values.get(f"psselocalpsspy{pyver}path")
+                    bin_path = values.get("psseexepath")
+                    version = str(values.get("version") or f"{major}.{build_name}")
+                    if _is_valid_psspy_dir(psspy_path, bin_path):
+                        candidates.append(
+                            (_version_key(version), major, version, psspy_path, bin_path)
+                        )
+    return candidates
+
+
+def _psse_candidates_from_filesystem(pyver: str) -> list:
+    """Scan standard PTI installation roots for any major version, not a fixed list."""
+    candidates = []
+    roots = (
+        os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "PTI"),
+        os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "PTI"),
+    )
+    import re
+    for root in roots:
+        if not os.path.isdir(root):
+            continue
+        try:
+            product_dirs = os.listdir(root)
+        except OSError:
+            continue
+        for product_dir in product_dirs:
+            match = re.fullmatch(r"(?i)PSSE\s*(\d+)", product_dir)
+            if not match:
+                continue
+            major = int(match.group(1))
+            product_path = os.path.join(root, product_dir)
+            try:
+                versions = os.listdir(product_path)
+            except OSError:
+                continue
+            for version in versions:
+                version_path = os.path.join(product_path, version)
+                psspy_path = os.path.join(version_path, f"PSSPY{pyver}")
+                bin_path = os.path.join(version_path, "PSSBIN")
+                if _is_valid_psspy_dir(psspy_path, bin_path):
+                    version_string = version if str(major) in str(version) else f"{major}.{version}"
+                    candidates.append(
+                        (_version_key(version_string), major, version_string, psspy_path, bin_path)
+                    )
+    return candidates
+
+
 def _resolve_psse_paths():
-    """Return (python_lib, bin): config when available, else legacy defaults."""
+    """Resolve PSS/E paths lazily: explicit PowerMCP config, overrides, then discovery.
+
+    Returns (python_lib, bin_dir, import_module_name). Discovery is compatible
+    with the current interpreter and selects the highest installed version.
+    """
+    configured_python_lib = configured_bin = None
     try:
         from powermcp.config import get_path
-        return (get_path("psse", "python_lib", must_exist=False),
-                get_path("psse", "bin", must_exist=False))
+        configured_python_lib = get_path("psse", "python_lib", must_exist=False)
+        configured_bin = get_path("psse", "bin", must_exist=False)
     except Exception:
-        return _PSSE_LEGACY["python_lib"], _PSSE_LEGACY["bin"]
+        pass
+
+    # PowerMCP's explicit configuration is authoritative when it points to
+    # actual directories. Infer the major from the configured install path.
+    if _is_valid_psspy_dir(configured_python_lib, configured_bin):
+        major = _major_from_paths(configured_python_lib, configured_bin)
+        if major is None:
+            raise RuntimeError(
+                "Could not infer the PSS/E major version from configured paths; "
+                "set PSSE_VERSION (for example, 37.1) or use a path containing PSSE<major>."
+            )
+        return configured_python_lib, configured_bin, f"psse{major}"
+
+    override_python_lib = os.environ.get("PSSE_PSSPY_PATH")
+    override_bin = os.environ.get("PSSE_EXE_PATH")
+    if override_python_lib or override_bin:
+        if not (override_python_lib and override_bin):
+            raise RuntimeError(
+                "PSS/E manual override requires both PSSE_PSSPY_PATH and PSSE_EXE_PATH."
+            )
+        if not (os.path.isdir(override_python_lib) and os.path.isdir(override_bin)):
+            raise RuntimeError(
+                "PSS/E manual override paths must both exist: "
+                "PSSE_PSSPY_PATH and PSSE_EXE_PATH."
+            )
+        major = _major_from_paths(override_python_lib, override_bin)
+        if major is None:
+            raise RuntimeError(
+                "Could not infer the PSS/E major version from override paths; "
+                "set PSSE_VERSION to the installed major (for example, 37.1)."
+            )
+        return override_python_lib, override_bin, f"psse{major}"
+
+    pyver = f"{sys.version_info.major}{sys.version_info.minor}"
+    candidates_by_path = {}
+    for candidate in _psse_candidates_from_registry(pyver):
+        candidates_by_path[os.path.normcase(candidate[3])] = candidate
+    for candidate in _psse_candidates_from_filesystem(pyver):
+        candidates_by_path.setdefault(os.path.normcase(candidate[3]), candidate)
+    candidates = list(candidates_by_path.values())
+
+    # Keep the historical location as a final fallback, but only if it is a
+    # complete install compatible with this interpreter.
+    legacy_python_lib = _PSSE_LEGACY["python_lib"]
+    legacy_bin = _PSSE_LEGACY["bin"]
+    if _is_valid_psspy_dir(legacy_python_lib, legacy_bin):
+        major = _major_from_paths(legacy_python_lib, legacy_bin) or 36
+        legacy_version = str(major) + ".0"
+        candidates.append(
+            (_version_key(legacy_version), major, legacy_version, legacy_python_lib, legacy_bin)
+        )
+
+    if not candidates:
+        raise RuntimeError(
+            f"Could not find a PSS/E installation with Python {pyver} support "
+            f"(interpreter: {sys.executable}). Checked PowerMCP config, manual "
+            "overrides, the Windows registry, and standard PTI install directories. "
+            "Configure psse.python_lib and psse.bin or set both "
+            "PSSE_PSSPY_PATH and PSSE_EXE_PATH."
+        )
+
+    _, major, _, python_lib, bin_dir = max(candidates, key=lambda item: item[0])
+    return python_lib, bin_dir, f"psse{major}"
 
 
 def _ensure_psse():
@@ -55,21 +258,20 @@ def _ensure_psse():
     global psspy, _psse_ready
     if _psse_ready:
         return psspy
-    python_lib, bin_dir = _resolve_psse_paths()
-    for p in (python_lib, bin_dir):
-        if not p:
-            continue
-        if p not in sys.path:
-            sys.path.insert(0, p)
-        os.environ["PATH"] = p + os.pathsep + os.environ.get("PATH", "")
+    python_lib, bin_dir, module_name = _resolve_psse_paths()
+    for path in (python_lib, bin_dir):
+        if path not in sys.path:
+            sys.path.insert(0, path)
+        os.environ["PATH"] = path + os.pathsep + os.environ.get("PATH", "")
     try:
-        import psse36  # noqa: F401  (vendor shim that sets up further paths)
+        import importlib
+        importlib.import_module(module_name)
         import psspy as _psspy
-    except Exception as e:
+    except Exception as exc:
         raise RuntimeError(
-            "Could not import PSS/E (psspy). Ensure PSS/E is installed and its paths "
-            "are configured: `powermcp config set psse.python_lib <PSSPYxxx dir>` and "
-            "`powermcp config set psse.bin <PSSBIN dir>`. Original error: " + repr(e)
+            f"Could not import PSS/E (psspy) using {module_name}. Ensure the matching "
+            "PSS/E installation and Python version are configured. Original error: "
+            + repr(exc)
         )
     _psspy.psseinit(50)  # 50 = PSS/E 35+ bus mode; do NOT change
     psspy = _psspy
@@ -672,7 +874,16 @@ def run_psspy_command(function_name: str, arguments: Optional[Dict[str, Any]] = 
 
     try:
         _ensure_psse()
-        result = handler(spec, arguments)
+        output_buffer = io.StringIO()
+        previous_stdout = sys.stdout
+        sys.stdout = output_buffer
+        try:
+            result = handler(spec, arguments)
+        finally:
+            sys.stdout = previous_stdout
+        captured = output_buffer.getvalue()
+        if captured and "report" not in result:
+            result["_console_output"] = captured
         # Attach function metadata for AI context
         result["_function"] = function_name
         result["_return_type"] = return_type
