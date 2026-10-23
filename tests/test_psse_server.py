@@ -405,3 +405,98 @@ def test_an_output_file_outside_the_roots_is_refused(
     assert result["status"] == "error"
     assert "outside allowed MCP roots" in result["message"]
     assert dyntools.engine_starts == 0
+
+
+
+def test_resolve_psse_paths_prefers_configured_install(monkeypatch, tmp_path):
+    """Configured paths take precedence over registry/filesystem discovery."""
+    import powermcp.config
+
+    python_lib = tmp_path / "PSSE37" / "37.1" / "PSSPY312"
+    bin_dir = tmp_path / "PSSE37" / "37.1" / "PSSBIN"
+    python_lib.mkdir(parents=True)
+    bin_dir.mkdir(parents=True)
+    (python_lib / "psspy.pyd").write_bytes(b"fake")
+    monkeypatch.setattr(
+        powermcp.config,
+        "get_path",
+        lambda product, key, must_exist=False: (
+            str(python_lib) if key == "python_lib" else str(bin_dir)
+        ),
+    )
+    monkeypatch.setattr(psse_mcp, "_psse_candidates_from_registry", lambda pyver: [])
+    monkeypatch.setattr(psse_mcp, "_psse_candidates_from_filesystem", lambda pyver: [])
+
+    assert psse_mcp._resolve_psse_paths() == (
+        str(python_lib), str(bin_dir), "psse37"
+    )
+
+
+def test_resolve_psse_paths_discovers_highest_major_without_fixed_cap(monkeypatch):
+    """A discovered PSS/E 37 install must beat 36 and 35."""
+    import powermcp.config
+    monkeypatch.setattr(
+        powermcp.config, "get_path",
+        lambda product, key, must_exist=False: None,
+    )
+    monkeypatch.setattr(
+        psse_mcp, "_psse_candidates_from_registry",
+        lambda pyver: [
+            ((36, 2), 36, "36.2", r"C:\PSSE36\PSSPY", r"C:\PSSE36\PSSBIN"),
+            ((37, 1), 37, "37.1", r"C:\PSSE37\PSSPY", r"C:\PSSE37\PSSBIN"),
+            ((35, 6), 35, "35.6", r"C:\PSSE35\PSSPY", r"C:\PSSE35\PSSBIN"),
+        ],
+    )
+    monkeypatch.setattr(psse_mcp, "_psse_candidates_from_filesystem", lambda pyver: [])
+    monkeypatch.setattr(psse_mcp, "_is_valid_psspy_dir", lambda *args: False)
+
+    python_lib, bin_dir, module = psse_mcp._resolve_psse_paths()
+    assert python_lib == r"C:\PSSE37\PSSPY"
+    assert bin_dir == r"C:\PSSE37\PSSBIN"
+    assert module == "psse37"
+
+
+def test_resolve_psse_paths_reports_partial_manual_override(monkeypatch):
+    import powermcp.config
+    monkeypatch.setattr(
+        powermcp.config, "get_path",
+        lambda product, key, must_exist=False: None,
+    )
+    monkeypatch.setenv("PSSE_PSSPY_PATH", r"C:\PSSE37\PSSPY312")
+    monkeypatch.delenv("PSSE_EXE_PATH", raising=False)
+    monkeypatch.setattr(psse_mcp, "_psse_candidates_from_registry", lambda pyver: [])
+    monkeypatch.setattr(psse_mcp, "_psse_candidates_from_filesystem", lambda pyver: [])
+
+    with pytest.raises(RuntimeError, match="requires both PSSE_PSSPY_PATH and PSSE_EXE_PATH"):
+        psse_mcp._resolve_psse_paths()
+
+
+def test_run_psspy_command_returns_captured_console_output(monkeypatch, tmp_path):
+    """PSS/E's report output is returned to the caller, not leaked to stdout."""
+    import json
+
+    spec_dir = tmp_path / "specs"
+    spec_dir.mkdir()
+    (spec_dir / "diff.json").write_text(
+        json.dumps({
+            "function_name": "diff",
+            "return_type": "void",
+            "parameters": [],
+            "return_values": [],
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(psse_mcp, "JSON_DIR", spec_dir)
+
+    class PrintingPsspy:
+        def diff(self):
+            print("PSS/E difference report")
+
+    monkeypatch.setattr(psse_mcp, "psspy", PrintingPsspy())
+    monkeypatch.setattr(psse_mcp, "_ensure_psse", lambda: psse_mcp.psspy)
+    monkeypatch.setattr(psse_mcp, "_command_spec_path", lambda name: spec_dir / f"{name}.json")
+
+    result = psse_mcp.run_psspy_command("diff", {})
+    assert result["status"] == "success"
+    assert result["_console_output"] == "PSS/E difference report\n"
+    assert result["_function"] == "diff"
