@@ -500,3 +500,17 @@ def test_run_psspy_command_returns_captured_console_output(monkeypatch, tmp_path
     assert result["status"] == "success"
     assert result["_console_output"] == "PSS/E difference report\n"
     assert result["_function"] == "diff"
+
+
+
+def test_psse_version_override_accepts_full_version(monkeypatch):
+    monkeypatch.setenv("PSSE_VERSION", "36.2")
+    assert psse_mcp._major_from_paths(r"C:\custom\PSSPY311") == 36
+
+
+def test_python_library_path_must_match_interpreter_when_version_is_encoded():
+    assert psse_mcp._python_lib_matches_interpreter(r"C:\PSSE37\37.1\PSSPY312", "312")
+    assert not psse_mcp._python_lib_matches_interpreter(r"C:\PSSE36\36.2\PSSPY311", "312")
+    # Custom directory names are accepted; the caller's explicit configuration
+    # may legitimately use a nonstandard folder name.
+    assert psse_mcp._python_lib_matches_interpreter(r"C:\custom\psspy", "312")
