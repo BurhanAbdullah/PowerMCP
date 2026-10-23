@@ -63,6 +63,16 @@ def _major_from_paths(*paths: Optional[str]) -> Optional[int]:
     return int(match.group(1)) if match else None
 
 
+def _python_lib_matches_interpreter(python_lib: Optional[str], pyver: str) -> bool:
+    """Reject a recognizable PSSPY directory built for another Python version."""
+    import re
+
+    if not python_lib:
+        return False
+    match = re.fullmatch(r"(?i)PSSPY(\\d+)", os.path.basename(os.path.normpath(python_lib)))
+    return match is None or match.group(1) == pyver
+
+
 def _is_valid_psspy_dir(psspy_path: Optional[str], bin_path: Optional[str]) -> bool:
     """Require real PSSPY and PSSBIN directories before selecting an install."""
     if not psspy_path or not bin_path:
@@ -190,9 +200,14 @@ def _resolve_psse_paths():
     except Exception:
         pass
 
+    pyver = f"{sys.version_info.major}{sys.version_info.minor}"
+
     # PowerMCP's explicit configuration is authoritative when it points to
-    # actual directories. Infer the major from the configured install path.
-    if _is_valid_psspy_dir(configured_python_lib, configured_bin):
+    # actual directories built for this interpreter. Infer the major from the path.
+    if (
+        _is_valid_psspy_dir(configured_python_lib, configured_bin)
+        and _python_lib_matches_interpreter(configured_python_lib, pyver)
+    ):
         major = _major_from_paths(configured_python_lib, configured_bin)
         if major is None:
             raise RuntimeError(
@@ -208,10 +223,15 @@ def _resolve_psse_paths():
             raise RuntimeError(
                 "PSS/E manual override requires both PSSE_PSSPY_PATH and PSSE_EXE_PATH."
             )
-        if not (os.path.isdir(override_python_lib) and os.path.isdir(override_bin)):
+        if not _is_valid_psspy_dir(override_python_lib, override_bin):
             raise RuntimeError(
-                "PSS/E manual override paths must both exist: "
-                "PSSE_PSSPY_PATH and PSSE_EXE_PATH."
+                "PSS/E manual override must contain a psspy module and both paths "
+                "must exist: PSSE_PSSPY_PATH and PSSE_EXE_PATH."
+            )
+        if not _python_lib_matches_interpreter(override_python_lib, f"{sys.version_info.major}{sys.version_info.minor}"):
+            raise RuntimeError(
+                "PSSE_PSSPY_PATH does not match this Python interpreter version. "
+                f"Expected a PSSPY{sys.version_info.major}{sys.version_info.minor} directory."
             )
         major = _major_from_paths(override_python_lib, override_bin)
         if major is None:
@@ -221,7 +241,6 @@ def _resolve_psse_paths():
             )
         return override_python_lib, override_bin, f"psse{major}"
 
-    pyver = f"{sys.version_info.major}{sys.version_info.minor}"
     candidates_by_path = {}
     for candidate in _psse_candidates_from_registry(pyver):
         candidates_by_path[os.path.normcase(candidate[3])] = candidate
@@ -233,7 +252,10 @@ def _resolve_psse_paths():
     # complete install compatible with this interpreter.
     legacy_python_lib = _PSSE_LEGACY["python_lib"]
     legacy_bin = _PSSE_LEGACY["bin"]
-    if _is_valid_psspy_dir(legacy_python_lib, legacy_bin):
+    if (
+        os.path.basename(os.path.normpath(legacy_python_lib)).lower() == f"psspy{pyver}".lower()
+        and _is_valid_psspy_dir(legacy_python_lib, legacy_bin)
+    ):
         major = _major_from_paths(legacy_python_lib, legacy_bin) or 36
         legacy_version = str(major) + ".0"
         candidates.append(
