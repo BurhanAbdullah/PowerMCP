@@ -244,3 +244,41 @@ def test_a_roots_variable_with_no_directory_is_refused(monkeypatch):
     monkeypatch.setenv(ALLOWED_ROOTS_ENV, "   ")
     style, msg = doctor._containment_status()
     assert style == "red" and "at least one directory" in msg
+
+
+def test_path_status_validates_supplied_optional_paths(isolated_config):
+    """Optional means unset is fine, not that a bad value should be ignored."""
+    from powermcp import config as cfg
+
+    # HOPE's julia_depot_path is optional. An unset value does not block setup.
+    style, msg = doctor._path_status(get_tool("hope"))
+    assert style == "yellow"  # the required repo_root and julia_bin remain unset
+    assert "hope.julia_depot_path" not in msg
+
+    # Once explicitly configured, the optional path is still checked.
+    target = isolated_config / "depot"
+    target.write_text("")
+    cfg.set_value("hope", "julia_depot_path", str(target))
+    style, msg = doctor._path_status(get_tool("hope"))
+    assert style == "yellow"
+    assert "wrong type" in msg
+    assert "hope.julia_depot_path" in msg
+    assert "expected dir" in msg
+
+
+def test_path_status_accepts_valid_optional_path(isolated_config):
+    from powermcp import config as cfg
+
+    repo = isolated_config / "hope-repo"
+    repo.mkdir()
+    julia = isolated_config / "julia"
+    julia.write_text("")
+    depot = isolated_config / "depot"
+    depot.mkdir()
+    cfg.set_value("hope", "repo_root", str(repo))
+    cfg.set_value("hope", "julia_bin", str(julia))
+    cfg.set_value("hope", "julia_depot_path", str(depot))
+
+    style, msg = doctor._path_status(get_tool("hope"))
+    assert style == "green"
+    assert msg == "configured (1 optional)"
