@@ -87,7 +87,6 @@ async def _project_output_changed(
         return False
     return any(
         metadata[1] > 0
-        and metadata[0] >= run_started_ns
         and (path not in baseline or baseline[path] != metadata)
         for path, metadata in current.items()
     )
