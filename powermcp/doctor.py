@@ -179,11 +179,15 @@ def _path_status(t: Tool) -> tuple[str, str]:
         return "dim", "-"
     missing = []
     wrong_type = []
-    for ck in required:
+    for ck in t.config_keys:
+        # Optional paths should not make a tool look unconfigured when unset,
+        # but a supplied optional path must still be valid. In particular,
+        # invalid optional paths should not silently disappear from doctor.
         try:
             resolved = Path(cfg.get_path(t.name, ck.key))
         except cfg.ConfigError:
-            missing.append(f"{t.name}.{ck.key}")
+            if ck.required:
+                missing.append(f"{t.name}.{ck.key}")
             continue
         valid = (
             resolved.is_dir() if ck.validate == "dir"
